@@ -1329,8 +1329,15 @@ EOF
             if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
-                log_error "Failed to clone repository"
-                exit 1
+                rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial HTTP/2 clone
+                log_warn "HTTPS clone failed; retrying with HTTP/1.1..."
+                if git -c http.version=HTTP/1.1 clone --depth 1 --branch "$BRANCH" \
+                   "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    log_success "Cloned via HTTPS (HTTP/1.1 retry)"
+                else
+                    log_error "Failed to clone repository"
+                    exit 1
+                fi
             fi
         fi
     fi
