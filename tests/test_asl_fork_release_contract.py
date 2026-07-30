@@ -106,6 +106,7 @@ def test_distribution_uses_the_fork_source_installer_not_python_artifacts():
     assert 'REPO_URL_HTTPS="https://github.com/aslxiaomu/hermes-agent.git"' in installer
     assert 'REPO_URL_SSH="git@github.com:aslxiaomu/hermes-agent.git"' in installer
     assert 'BRANCH="asl/production"' in installer
+    assert "--branch NAME  Git branch to install (default: asl/production)" in installer
 
     from hermes_cli import __update_branch__
     from hermes_cli.banner import (
