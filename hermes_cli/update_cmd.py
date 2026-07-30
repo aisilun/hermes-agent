@@ -539,35 +539,24 @@ def _update_via_zip(args):
     """
     import tempfile
     import zipfile
+    from urllib.parse import quote
     from urllib.request import urlretrieve
 
-    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
-    # static archive from GitHub, which is fine for the default "main"
-    # channel but would silently ignore --branch and update from main even
-    # if the user asked for something else — exactly the silent-divergence
-    # bug --branch was added to prevent. Refuse to proceed in that case
-    # rather than lie.
+    # The ZIP fallback exists for Windows git-file-I/O breakage. Bind the
+    # archive URL to the same governed branch resolver as the git update path;
+    # silently downloading main here would cross update channels.
     branch = _m()._resolve_update_branch(args)
-    if branch != "main":
-        print(
-            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
-            "update path."
-        )
-        print(
-            "  This path runs when git file I/O is broken on the system. "
-            "Either resolve the git-side breakage (typically an antivirus "
-            "or NTFS filter holding files open) and rerun `hermes update "
-            f"--branch {branch}`, or update against main with `hermes update`."
-        )
-        _m().sys.exit(1)
+    encoded_branch = quote(branch, safe="/")
+    archive_slug = branch.replace("/", "-")
     zip_url = (
-        f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
+        "https://github.com/aslxiaomu/hermes-agent/archive/refs/heads/"
+        f"{encoded_branch}.zip"
     )
 
     print("→ Downloading latest version...")
     tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
+        zip_path = os.path.join(tmp_dir, f"hermes-agent-{archive_slug}.zip")
         urlretrieve(zip_url, zip_path)
 
         print("→ Extracting...")

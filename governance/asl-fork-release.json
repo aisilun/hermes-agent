@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "repository": "aslxiaomu/hermes-agent",
+    "package_version": "0.19.0+asl.1",
+    "planned_tag": "v0.19.0-asl.1",
+    "status": "release_candidate",
+    "prepared_at": "2026-07-30"
+  },
+  "source": {
+    "upstream_repository": "NousResearch/hermes-agent",
+    "official_release_tag": "v2026.7.20",
+    "official_release_commit": "3ef6bbd201263d354fd83ec55b3c306ded2eb72a",
+    "upstream_base_commit": "0bd82a8a84595720ea1f14b103aeb81ca3cc50ef",
+    "turn_gate_source_commit": "0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561",
+    "upstream_pull_request": "https://github.com/NousResearch/hermes-agent/pull/74529",
+    "latest_upstream_main_observed": {
+      "commit": "937222f4ec80e6991e934e0b140b60e0030c55fd",
+      "observed_at": "2026-07-30",
+      "included": false
+    }
+  },
+  "maintenance": {
+    "owner": "aslxiaomu",
+    "upstream_tracking": "NousResearch/hermes-agent#74529",
+    "reconciliation_policy": "explicit-tested-port-only"
+  },
+  "distribution": {
+    "method": "shell-installer-source-checkout",
+    "installer_path": "scripts/install.sh",
+    "default_https_repository": "https://github.com/aslxiaomu/hermes-agent.git",
+    "default_ssh_repository": "git@github.com:aslxiaomu/hermes-agent.git",
+    "default_branch": "asl/production",
+    "planned_ref": "v0.19.0-asl.1",
+    "unsupported_artifacts": [
+      "wheel",
+      "sdist",
+      "pypi"
+    ]
+  },
+  "verification": {
+    "required_test_files": [
+      "tests/agent/test_turn_gate.py",
+      "tests/agent/test_conversation_reload_gate.py",
+      "tests/agent/test_tool_executor_reload_gate.py",
+      "tests/agent/test_host_tool_env_bridge.py",
+      "tests/gateway/test_reload_turn_gate.py",
+      "tests/hermes_cli/test_turn_gate_plugin.py",
+      "tests/test_asl_fork_release_contract.py",
+      "tests/hermes_cli/test_banner_git_state.py",
+      "tests/hermes_cli/test_cmd_update.py",
+      "tests/hermes_cli/test_update_zip_symlink_reject.py"
+    ],
+    "isolated_hermes_home_required": true
+  },
+  "authorization": {
+    "merge_authorized": true,
+    "tag_authorized": false,
+    "release_authorized": false,
+    "production_activation_authorized": false,
+    "fleet_apply_authorized": false
+  }
+}
