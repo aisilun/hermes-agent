@@ -647,7 +647,7 @@ class TestCmdUpdateZipBranchBinding:
 
         url = download.call_args.args[0]
         assert url == (
-            "https://github.com/aslxiaomu/hermes-agent/"
+            "https://github.com/aisilun/hermes-agent/"
             "archive/refs/heads/bb/gui.zip"
         )
         out = capsys.readouterr().out

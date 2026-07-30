@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "candidate": {
-    "repository": "aslxiaomu/hermes-agent",
+    "repository": "aisilun/hermes-agent",
     "package_version": "0.19.0+asl.1",
     "planned_tag": "v0.19.0-asl.1",
     "status": "release_candidate",
@@ -21,15 +21,15 @@
     }
   },
   "maintenance": {
-    "owner": "aslxiaomu",
+    "owner": "aisilun",
     "upstream_tracking": "NousResearch/hermes-agent#74529",
     "reconciliation_policy": "explicit-tested-port-only"
   },
   "distribution": {
     "method": "shell-installer-source-checkout",
     "installer_path": "scripts/install.sh",
-    "default_https_repository": "https://github.com/aslxiaomu/hermes-agent.git",
-    "default_ssh_repository": "git@github.com:aslxiaomu/hermes-agent.git",
+    "default_https_repository": "https://github.com/aisilun/hermes-agent.git",
+    "default_ssh_repository": "git@github.com:aisilun/hermes-agent.git",
     "default_branch": "asl/production",
     "planned_ref": "v0.19.0-asl.1",
     "unsupported_artifacts": [

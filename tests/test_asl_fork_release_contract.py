@@ -47,7 +47,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
 
     candidate = contract["candidate"]
     assert candidate == {
-        "repository": "aslxiaomu/hermes-agent",
+        "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
         "planned_tag": EXPECTED_TAG,
         "status": "release_candidate",
@@ -95,16 +95,16 @@ def test_distribution_uses_the_fork_source_installer_not_python_artifacts():
     assert distribution == {
         "method": "shell-installer-source-checkout",
         "installer_path": "scripts/install.sh",
-        "default_https_repository": "https://github.com/aslxiaomu/hermes-agent.git",
-        "default_ssh_repository": "git@github.com:aslxiaomu/hermes-agent.git",
+        "default_https_repository": "https://github.com/aisilun/hermes-agent.git",
+        "default_ssh_repository": "git@github.com:aisilun/hermes-agent.git",
         "default_branch": "asl/production",
         "planned_ref": "v0.19.0-asl.1",
         "unsupported_artifacts": ["wheel", "sdist", "pypi"],
     }
 
     installer = (ROOT / distribution["installer_path"]).read_text(encoding="utf-8")
-    assert 'REPO_URL_HTTPS="https://github.com/aslxiaomu/hermes-agent.git"' in installer
-    assert 'REPO_URL_SSH="git@github.com:aslxiaomu/hermes-agent.git"' in installer
+    assert 'REPO_URL_HTTPS="https://github.com/aisilun/hermes-agent.git"' in installer
+    assert 'REPO_URL_SSH="git@github.com:aisilun/hermes-agent.git"' in installer
     assert 'BRANCH="asl/production"' in installer
     assert "--branch NAME  Git branch to install (default: asl/production)" in installer
     assert 'git -c http.version=HTTP/1.1 clone --depth 1 --branch "$BRANCH"' in installer
@@ -120,7 +120,7 @@ def test_distribution_uses_the_fork_source_installer_not_python_artifacts():
     assert __update_branch__ == distribution["default_branch"]
     assert _UPDATE_BRANCH == distribution["default_branch"]
     assert _UPSTREAM_REPO_URL == distribution["default_https_repository"]
-    assert _RELEASE_URL_BASE == "https://github.com/aslxiaomu/hermes-agent/releases/tag"
+    assert _RELEASE_URL_BASE == "https://github.com/aisilun/hermes-agent/releases/tag"
     assert _resolve_update_branch(SimpleNamespace(branch=None)) == "asl/production"
     assert _resolve_update_branch(SimpleNamespace(branch="feature/test")) == "feature/test"
 
@@ -134,7 +134,7 @@ def test_distribution_uses_the_fork_source_installer_not_python_artifacts():
 def test_asl_fork_contract_keeps_release_and_activation_closed():
     contract = _load_contract()
     assert contract["maintenance"] == {
-        "owner": "aslxiaomu",
+        "owner": "aisilun",
         "upstream_tracking": "NousResearch/hermes-agent#74529",
         "reconciliation_policy": "explicit-tested-port-only",
     }

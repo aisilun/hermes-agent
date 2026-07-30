@@ -1,6 +1,6 @@
 # ASL Hermes 定制分支
 
-本仓库的 `aslxiaomu/hermes-agent` 分支用于承载 ASL 生产所需、尚未进入 Hermes 上游正式版的最小 host capability（宿主能力）。机器可读的唯一候选合同是 [`governance/asl-fork-release.json`](governance/asl-fork-release.json)。
+本仓库的 `aisilun/hermes-agent` 分支用于承载 ASL 生产所需、尚未进入 Hermes 上游正式版的最小 host capability（宿主能力）。机器可读的唯一候选合同是 [`governance/asl-fork-release.json`](governance/asl-fork-release.json)。
 
 ## 当前状态
 
@@ -42,7 +42,7 @@
 
 ## 维护责任
 
-- owner（维护责任账号）：`aslxiaomu`
+- owner（维护责任组织）：`aisilun`
 - 上游同步策略：`explicit-tested-port-only`（仅显式、经过测试的移植）
 - 不自动跟随 `upstream/main`
 - `asl/production` 是唯一默认 install/update/banner/release（安装、更新、启动提示与发布链接）通道；fork 的旧 `main` 不属于生产线
@@ -55,7 +55,7 @@
 1. 机器合同与 `pyproject.toml`、`hermes_cli.__version__`、`uv.lock` 版本一致。
 2. 合同声明的 6 个 turn-gate 测试文件与 4 个 fork/update 测试文件全部通过。
 3. 在临时 `HERMES_HOME` 中完成插件发现、配置加载、Gateway 入口、工具前门和输出后门隔离验证。
-4. 保留 `setup.py` 对 wheel/sdist/PyPI（轮子包/源码包/Python 包索引发布）的官方禁令；通过 `scripts/install.sh` 从 `aslxiaomu/hermes-agent` 的 `asl/production` 固定 Tag 和 commit 源码检出，并在全新 venv（虚拟环境）与临时 `HERMES_HOME` 中完成安装 smoke test（冒烟测试）。Windows ZIP fallback（回退更新）也必须绑定同一 fork branch（分支），不得回落到官方 `main`。
+4. 保留 `setup.py` 对 wheel/sdist/PyPI（轮子包/源码包/Python 包索引发布）的官方禁令；通过 `scripts/install.sh` 从 `aisilun/hermes-agent` 的 `asl/production` 固定 Tag 和 commit 源码检出，并在全新 venv（虚拟环境）与临时 `HERMES_HOME` 中完成安装 smoke test（冒烟测试）。Windows ZIP fallback（回退更新）也必须绑定同一 fork branch（分支），不得回落到官方 `main`。
 5. PR 的 exact HEAD 通过 CI，并由指定的小沐账号单审。
 6. merge（合并）、Tag、Release、production activation、Fleet apply 分闸；后四项均需新的精确授权。
 

@@ -549,7 +549,7 @@ def _update_via_zip(args):
     encoded_branch = quote(branch, safe="/")
     archive_slug = branch.replace("/", "-")
     zip_url = (
-        "https://github.com/aslxiaomu/hermes-agent/archive/refs/heads/"
+        "https://github.com/aisilun/hermes-agent/archive/refs/heads/"
         f"{encoded_branch}.zip"
     )
 
