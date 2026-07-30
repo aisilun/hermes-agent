@@ -23,9 +23,12 @@ jobs:
 
       - name: Check for unmapped contributor emails
         id: check-emails
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
         run: |
-          # Get the merge base between this PR and main
-          MERGE_BASE=$(git merge-base origin/main HEAD)
+          # Compare this PR with its actual target branch. The caller only invokes
+          # this reusable workflow for pull_request events, so base_ref is present.
+          MERGE_BASE=$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)
 
           # Find any new author emails in this PR's commits
           NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
