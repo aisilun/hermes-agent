@@ -154,3 +154,17 @@ def test_asl_fork_contract_names_existing_required_tests():
     assert verification["isolated_hermes_home_required"] is True
     for relative_path in verification["required_test_files"]:
         assert (ROOT / relative_path).is_file(), relative_path
+
+
+def test_contributor_check_uses_the_pull_request_base_branch():
+    ci_workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    contributor_workflow = (ROOT / ".github/workflows/contributor-check.yml").read_text(encoding="utf-8")
+
+    assert (
+        "if: needs.detect.outputs.python == 'true' && "
+        "needs.detect.outputs.event_name == 'pull_request'\n"
+        "    uses: ./.github/workflows/contributor-check.yml"
+    ) in ci_workflow
+    assert "GITHUB_BASE_REF: ${{ github.base_ref }}" in contributor_workflow
+    assert 'git merge-base "origin/${GITHUB_BASE_REF}" HEAD' in contributor_workflow
+    assert "git merge-base origin/main HEAD" not in contributor_workflow
