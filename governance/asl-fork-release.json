@@ -2,15 +2,15 @@
   "schema_version": 1,
   "candidate": {
     "repository": "aisilun/hermes-agent",
-    "package_version": "0.19.0+asl.3",
-    "planned_tag": "v0.19.0-asl.3",
-    "status": "official",
+    "package_version": "0.19.0+asl.4",
+    "planned_tag": "v0.19.0-asl.4",
+    "status": "candidate",
     "prepared_at": "2026-07-31"
   },
   "release_state": {
     "official_source_version": "0.19.0+asl.3",
-    "source_status": "official",
-    "previous_official_version": "0.19.0+asl.2",
+    "source_status": "candidate",
+    "previous_official_version": "0.19.0+asl.3",
     "github_release_requires_live_readback": true,
     "fleet_applied": false
   },
@@ -38,7 +38,7 @@
     "default_https_repository": "https://github.com/aisilun/hermes-agent.git",
     "default_ssh_repository": "git@github.com:aisilun/hermes-agent.git",
     "default_branch": "asl/production",
-    "planned_ref": "v0.19.0-asl.3",
+    "planned_ref": "v0.19.0-asl.4",
     "unsupported_artifacts": [
       "wheel",
       "sdist",
@@ -53,6 +53,7 @@
       "tests/agent/test_host_tool_env_bridge.py",
       "tests/gateway/test_reload_turn_gate.py",
       "tests/hermes_cli/test_turn_gate_plugin.py",
+      "tests/hermes_cli/test_kanban_privileged_delegation.py",
       "tests/test_asl_fork_release_contract.py",
       "tests/hermes_cli/test_banner_git_state.py",
       "tests/hermes_cli/test_cmd_update.py",
@@ -62,8 +63,8 @@
   },
   "authorization": {
     "merge_authorized": true,
-    "tag_authorized": true,
-    "release_authorized": true,
+    "tag_authorized": false,
+    "release_authorized": false,
     "production_activation_authorized": false,
     "fleet_apply_authorized": false
   }

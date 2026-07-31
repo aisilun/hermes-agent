@@ -4,17 +4,17 @@
 
 ## 当前状态
 
-- package version（包版本）：`0.19.0+asl.3`
-- release tag（正式标签）：`v0.19.0-asl.3`（由本次 release-only 合并提交创建）
+- package version（候选包版本）：`0.19.0+asl.4`
+- planned release tag（计划发布标签）：`v0.19.0-asl.4`（未创建、未授权）
 - production branch（生产分支）：`asl/production`
-- 状态：`official`（正式源码）
+- 状态：`candidate`（候选源码）
 - official source version（正式源码版本）：`0.19.0+asl.3`
-- 当前正式 Tag：`v0.19.0-asl.3`（由本次 release-only 合并提交创建）
+- 当前正式 Tag：`v0.19.0-asl.3`
 - 当前正式 GitHub Release：`v0.19.0-asl.3`（绑定该 Tag 并完成正文与状态回读）
 - production activation（生产激活）：未授权
 - Fleet apply（全量应用）：未授权
 
-该状态允许完成 `.3` 源码、测试、PR、CI、指定账号单审、已授权 merge（合并）及 `.3` Tag/Release 对象级回读，并允许在临时目录进行隔离安装验证。它不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
+该状态允许完成 `.4` 源码、测试、PR、CI、指定账号单审及已授权 merge（合并）。它不授权创建 `.4` Tag/Release，不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
 
 ## 来源绑定
 
@@ -54,7 +54,17 @@
 - macOS `hermes gateway install --no-start-now --no-start-on-login` 现在把参数完整传入 `launchd`，生成 `RunAtLoad=false`、`KeepAlive=false` 的 plist，安装时不 bootstrap（加载）服务；后续 plist 刷新保持该显式策略，不会静默恢复自动启动；
 - `.lazy-refresh-incomplete` 被定义为 runtime recovery marker（运行时恢复标记），从 Git 跟踪树移除并写入 `.gitignore`，不再污染固定 Tag 的源码安装。
 
-本正式源码不包含：独立 ASL 权限插件、真实 Feishu approval（飞书审批）配置、生产密钥、数据库迁移、生产部署或 Fleet apply。
+`.4` candidate（候选止血版）只增加 Kanban privileged delegation containment（特权委托止血）：
+
+- `default`被定义为 code-owned privileged profile（代码持有的特权配置档案），不能由 agent 可编辑配置关闭；
+- create、assign/reassign、`kanban.default_assignee`、ready/review claim、dispatcher 与 `_default_spawn`共用同一 fail-closed 规则；任何从非 `default`／空 assignee 转入 `default`的 assign/reassign 均拒绝，`kanban.default_assignee=default`也一律禁用；
+- 非 `default`、`worker`、空来源和 legacy row（旧行）指向 `default`时，在 spawn、凭据读取、Gateway 动作与远端写入前拒绝；旧行被置为 `blocked`，标准 `block_kind=capability`，并记录 `policy=privileged_delegation`；
+- CLI 把所有 task（任务）的 `created_by`绑定到 active profile（活动配置档案），拒绝任何不一致的 `--created-by`伪造，防止先伪造来源、再二次 reassign（重派）到特权目标；`kanban_create`工具使用相同的 runtime active-profile resolver（运行时活动配置档案解析器），即使 default 会话未导出 `HERMES_PROFILE`也能保留合法自来源；
+- `default`直接创建 `assignee=default`、`default`创建非特权 task，以及非特权 profile 之间的正常路由保持可用；任务一旦 handoff（交接）离开 `default`，不能靠 reassign 回流，须由 `default`新建直接任务。
+
+该止血版不是完整 zero-trust broker（零信任授权代理）：legacy `created_by`与本机环境变量仍不是密码学证明，同一 OS 用户直接修改 SQLite／进程环境不属于 `.4`已解决边界。受治理的跨 profile single-use grant（单次授权）、side-effect authorization（副作用授权）与不可伪造 provenance（来源证明）仍须后续独立设计；在此之前，仅创建阶段的 `default` self-origin（自来源）任务可直接指向 `default`，其他入站委托和 reassign（重派）回流均拒绝。
+
+本候选源码不包含：独立 ASL 权限插件、真实 Feishu approval（飞书审批）配置、生产密钥、数据库迁移、生产部署或 Fleet apply。
 
 ## 维护责任
 
@@ -69,7 +79,7 @@
 ## 发布前硬门
 
 1. 机器合同与 `pyproject.toml`、`hermes_cli.__version__`、`uv.lock` 版本一致。
-2. 合同声明的 6 个 turn-gate 测试文件与 4 个 fork/update 测试文件全部通过。
+2. 合同声明的 6 个 turn-gate 测试文件与 5 个 fork/update/security 测试文件全部通过。
 3. 在临时 `HERMES_HOME` 中完成插件发现、配置加载、Gateway 入口、工具前门和输出后门隔离验证。
 4. 保留 `setup.py` 对 wheel/sdist/PyPI（轮子包/源码包/Python 包索引发布）的官方禁令；通过 `scripts/install.sh` 从 `aisilun/hermes-agent` 的 `asl/production` 固定 Tag 和 commit 源码检出，并在全新 venv（虚拟环境）与临时 `HERMES_HOME` 中完成安装 smoke test（冒烟测试）。Windows ZIP fallback（回退更新）也必须绑定同一 fork branch（分支），不得回落到官方 `main`。
 5. PR 的 exact HEAD 通过 CI，并由指定的小沐账号单审。
@@ -77,4 +87,4 @@
 
 ## 计划回滚边界
 
-`.3` 若发布后验收失败，只允许回滚到 `0.19.0+asl.2` 的已记录 commit、Tag 与源码归档 SHA-256，并恢复原 `config.yaml`；不得通过禁用 fail-closed gate（失败关闭门）来恢复服务。生产回滚方案仍须在后续生产激活授权包中绑定具体来源摘要和恢复命令。
+`.4` 候选或后续发布若验收失败，只允许回滚到 `0.19.0+asl.3` 的已记录 commit、Tag 与源码归档 SHA-256，并恢复原 `config.yaml`；不得通过禁用 fail-closed gate（失败关闭门）来恢复服务。生产回滚方案仍须在后续生产激活授权包中绑定具体来源摘要和恢复命令。

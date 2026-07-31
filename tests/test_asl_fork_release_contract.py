@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "governance" / "asl-fork-release.json"
-EXPECTED_VERSION = "0.19.0+asl.3"
-EXPECTED_TAG = "v0.19.0-asl.3"
-CURRENT_OFFICIAL_VERSION = EXPECTED_VERSION
+EXPECTED_VERSION = "0.19.0+asl.4"
+EXPECTED_TAG = "v0.19.0-asl.4"
+CURRENT_OFFICIAL_VERSION = "0.19.0+asl.3"
 EXPECTED_REQUIRED_TESTS = {
     "tests/agent/test_turn_gate.py",
     "tests/agent/test_conversation_reload_gate.py",
@@ -22,6 +22,7 @@ EXPECTED_REQUIRED_TESTS = {
     "tests/agent/test_host_tool_env_bridge.py",
     "tests/gateway/test_reload_turn_gate.py",
     "tests/hermes_cli/test_turn_gate_plugin.py",
+    "tests/hermes_cli/test_kanban_privileged_delegation.py",
     "tests/test_asl_fork_release_contract.py",
     "tests/hermes_cli/test_banner_git_state.py",
     "tests/hermes_cli/test_cmd_update.py",
@@ -53,7 +54,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
         "planned_tag": EXPECTED_TAG,
-        "status": "official",
+        "status": "candidate",
         "prepared_at": "2026-07-31",
     }
 
@@ -143,21 +144,21 @@ def test_asl_fork_contract_keeps_release_and_activation_closed():
     }
 
 
-def test_asl_fork_official_release_keeps_live_activation_closed():
+def test_asl_fork_candidate_keeps_release_and_live_activation_closed():
     contract = _load_contract()
 
-    assert contract["candidate"]["status"] == "official"
+    assert contract["candidate"]["status"] == "candidate"
     assert contract["release_state"] == {
         "official_source_version": CURRENT_OFFICIAL_VERSION,
-        "source_status": "official",
-        "previous_official_version": "0.19.0+asl.2",
+        "source_status": "candidate",
+        "previous_official_version": CURRENT_OFFICIAL_VERSION,
         "github_release_requires_live_readback": True,
         "fleet_applied": False,
     }
     assert contract["authorization"] == {
         "merge_authorized": True,
-        "tag_authorized": True,
-        "release_authorized": True,
+        "tag_authorized": False,
+        "release_authorized": False,
         "production_activation_authorized": False,
         "fleet_apply_authorized": False,
     }

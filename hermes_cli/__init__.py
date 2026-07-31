@@ -14,7 +14,7 @@ Provides subcommands for:
 import os
 import sys
 
-__version__ = "0.19.0+asl.3"
+__version__ = "0.19.0+asl.4"
 __release_date__ = "2026.7.31"
 __update_branch__ = "asl/production"
 
