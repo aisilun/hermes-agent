@@ -4,17 +4,17 @@
 
 ## 当前状态
 
-- candidate package version（候选包版本）：`0.19.0+asl.2`
-- planned tag（计划标签）：`v0.19.0-asl.2`（未授权、未创建）
+- package version（包版本）：`0.19.0+asl.2`
+- release tag（正式标签）：`v0.19.0-asl.2`（由本次 release-only 合并提交创建）
 - production branch（生产分支）：`asl/production`
-- candidate status（候选状态）：`candidate`
-- current official source version（当前正式源码版本）：`0.19.0+asl.1`
-- current official Tag（当前正式标签）：`v0.19.0-asl.1`
-- current GitHub Release（当前正式发布）：`v0.19.0-asl.1`
+- 状态：`official`（正式源码）
+- official source version（正式源码版本）：`0.19.0+asl.2`
+- Tag：`v0.19.0-asl.2`（由本次 release-only 合并提交创建）
+- GitHub Release：`v0.19.0-asl.2`（绑定 Tag 并完成正文与状态回读）
 - production activation（生产激活）：未授权
 - Fleet apply（全量应用）：未授权
 
-该状态允许完成 `.2` 源码、测试、PR、CI、指定账号单审与已授权 merge（合并），并允许在临时目录进行隔离安装验证。它不授权 `.2` Tag/Release，不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
+该状态允许完成 `.2` 源码、测试、PR、CI、指定账号单审、已授权 merge（合并）及 `.2` Tag/Release 对象级回读，并允许在临时目录进行隔离安装验证。它不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
 
 ## 来源绑定
 
