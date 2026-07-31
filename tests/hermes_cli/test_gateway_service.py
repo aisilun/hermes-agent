@@ -1,6 +1,8 @@
 """Tests for gateway service management helpers."""
 
+import argparse
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
+from hermes_cli.subcommands.gateway import build_gateway_parser
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -231,6 +234,78 @@ class TestGeneratedSystemdUnits:
 
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
+
+
+class TestLaunchdInstallPreferences:
+    def test_gateway_install_forwards_explicit_macos_no_start_flags(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_install",
+            lambda force=False, *, start_now=True, start_on_login=True: calls.append(
+                (force, start_now, start_on_login)
+            ),
+        )
+
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_gateway_parser(
+            subparsers,
+            cmd_gateway=lambda _args: None,
+            cmd_proxy=lambda _args: None,
+            cmd_gateway_enroll=lambda _args: None,
+        )
+        args = parser.parse_args(
+            ["gateway", "install", "--no-start-now", "--no-start-on-login"]
+        )
+
+        assert args.start_now is False
+        assert args.start_on_login is False
+
+        gateway_cli._gateway_command_inner(args)
+
+        assert calls == [(False, False, False)]
+
+    def test_no_start_install_writes_unloaded_persistent_policy(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        bootstrap_calls = []
+        run_calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "_stable_service_working_dir", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "_refuse_temp_home_service_write", lambda *_args: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchctl_bootstrap",
+            lambda *args, **kwargs: bootstrap_calls.append((args, kwargs)),
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: run_calls.append((args, kwargs)),
+        )
+        plist_path.parent.mkdir(parents=True)
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        gateway_cli.launchd_install(
+            force=False,
+            start_now=False,
+            start_on_login=False,
+        )
+
+        policy = plistlib.loads(plist_path.read_bytes())
+        assert policy["RunAtLoad"] is False
+        assert policy["KeepAlive"] is False
+        assert bootstrap_calls == []
+        assert run_calls == []
+        assert gateway_cli.launchd_plist_is_current() is True
 
 
 

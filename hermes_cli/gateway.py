@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import plistlib
 import shlex
 import shutil
 import signal
@@ -3939,7 +3940,7 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
     return False
 
 
-def generate_launchd_plist() -> str:
+def generate_launchd_plist(*, start_on_login: bool = True) -> str:
     python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
@@ -3994,6 +3995,7 @@ def generate_launchd_plist() -> str:
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)
+    launchd_boolean = "<true/>" if start_on_login else "<false/>"
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -4027,10 +4029,10 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>RunAtLoad</key>
-    <true/>
+    {launchd_boolean}
     
     <key>KeepAlive</key>
-    <true/>
+    {launchd_boolean}
 
     <!-- ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid
@@ -4052,6 +4054,27 @@ def generate_launchd_plist() -> str:
 """
 
 
+def _launchd_start_on_login_from_plist(text: str) -> bool:
+    """Preserve an explicitly disabled launchd auto-start policy on refresh."""
+    try:
+        policy = plistlib.loads(text.encode("utf-8"))
+    except (ValueError, TypeError, plistlib.InvalidFileException):
+        return True
+    if not isinstance(policy, dict):
+        return True
+    return not (
+        policy.get("RunAtLoad") is False and policy.get("KeepAlive") is False
+    )
+
+
+def _generate_launchd_plist_for_policy(start_on_login: bool) -> str:
+    # Keep the default call argument-free so integrations that patch
+    # generate_launchd_plist() continue to work.
+    if start_on_login:
+        return generate_launchd_plist()
+    return generate_launchd_plist(start_on_login=False)
+
+
 def launchd_plist_is_current() -> bool:
     """Check if the installed launchd plist matches the currently generated one."""
     plist_path = get_launchd_plist_path()
@@ -4059,7 +4082,9 @@ def launchd_plist_is_current() -> bool:
         return False
 
     installed = plist_path.read_text(encoding="utf-8")
-    expected = generate_launchd_plist()
+    expected = _generate_launchd_plist_for_policy(
+        _launchd_start_on_login_from_plist(installed)
+    )
     return _normalize_launchd_plist_for_comparison(
         installed
     ) == _normalize_launchd_plist_for_comparison(expected)
@@ -4076,7 +4101,10 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
-    new_plist = generate_launchd_plist()
+    installed = plist_path.read_text(encoding="utf-8")
+    new_plist = _generate_launchd_plist_for_policy(
+        _launchd_start_on_login_from_plist(installed)
+    )
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
@@ -4231,30 +4259,55 @@ def refresh_launchd_plist_if_needed() -> bool:
     return True
 
 
-def launchd_install(force: bool = False):
+def launchd_install(
+    force: bool = False,
+    *,
+    start_now: bool = True,
+    start_on_login: bool = True,
+):
     plist_path = get_launchd_plist_path()
 
     if plist_path.exists() and not force:
-        if not launchd_plist_is_current():
-            print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
-            print("✓ Service definition updated")
+        installed = plist_path.read_text(encoding="utf-8")
+        installed_start_on_login = _launchd_start_on_login_from_plist(installed)
+        if installed_start_on_login == start_on_login:
+            if not launchd_plist_is_current():
+                print(f"↻ Repairing outdated launchd service at: {plist_path}")
+                refresh_launchd_plist_if_needed()
+                print("✓ Service definition updated")
+                return
+            print(f"Service already installed at: {plist_path}")
+            print("Use --force to reinstall")
             return
-        print(f"Service already installed at: {plist_path}")
-        print("Use --force to reinstall")
-        return
+        print(f"↻ Updating launchd start policy at: {plist_path}")
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    new_plist = generate_launchd_plist()
+    new_plist = _generate_launchd_plist_for_policy(start_on_login)
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(new_plist, encoding="utf-8")
 
+    if not start_now:
+        print()
+        print("✓ Service installed but not loaded")
+        print("  Start it later with: hermes gateway start")
+        return
+
     try:
         _launchctl_bootstrap(
             _launchd_domain(), plist_path, get_launchd_label(), timeout=30
         )
+        if not start_on_login:
+            subprocess.run(
+                [
+                    "launchctl",
+                    "kickstart",
+                    f"{_launchd_domain()}/{get_launchd_label()}",
+                ],
+                check=True,
+                timeout=30,
+            )
     except subprocess.CalledProcessError as e:
         if not _launchctl_domain_unsupported(e.returncode):
             raise
@@ -6453,7 +6506,11 @@ def gateway_setup():
                                 enable_on_startup=start_on_login,
                             )
                         elif is_macos():
-                            launchd_install(force=False)
+                            launchd_install(
+                                force=False,
+                                start_now=False,
+                                start_on_login=start_on_login,
+                            )
                             did_install = True
                         else:
                             from hermes_cli import gateway_windows
@@ -6832,7 +6889,15 @@ def _gateway_command_inner(args):
             if start_now:
                 systemd_start(system=system)
         elif is_macos():
-            launchd_install(force)
+            start_now = getattr(args, "start_now", None)
+            start_on_login = getattr(args, "start_on_login", None)
+            launchd_install(
+                force,
+                start_now=True if start_now is None else start_now,
+                start_on_login=(
+                    True if start_on_login is None else start_on_login
+                ),
+            )
         elif is_windows():
             from hermes_cli import gateway_windows
 
