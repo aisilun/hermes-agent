@@ -11,8 +11,9 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "governance" / "asl-fork-release.json"
-EXPECTED_VERSION = "0.19.0+asl.1"
-EXPECTED_TAG = "v0.19.0-asl.1"
+EXPECTED_VERSION = "0.19.0+asl.2"
+EXPECTED_TAG = "v0.19.0-asl.2"
+CURRENT_OFFICIAL_VERSION = "0.19.0+asl.1"
 EXPECTED_REQUIRED_TESTS = {
     "tests/agent/test_turn_gate.py",
     "tests/agent/test_conversation_reload_gate.py",
@@ -51,8 +52,8 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
         "planned_tag": EXPECTED_TAG,
-        "status": "official",
-        "prepared_at": "2026-07-30",
+        "status": "candidate",
+        "prepared_at": "2026-07-31",
     }
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
@@ -60,7 +61,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
 
     init_text = (ROOT / "hermes_cli" / "__init__.py").read_text(encoding="utf-8")
     assert f'__version__ = "{EXPECTED_VERSION}"' in init_text
-    assert '__release_date__ = "2026.7.30"' in init_text
+    assert '__release_date__ = "2026.7.31"' in init_text
 
 
 def test_asl_fork_contract_binds_source_and_explicit_divergence():
@@ -81,8 +82,8 @@ def test_asl_fork_contract_binds_source_and_explicit_divergence():
     assert source["turn_gate_source_commit"] == "0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561"
     assert source["upstream_pull_request"] == "https://github.com/NousResearch/hermes-agent/pull/74529"
     assert source["latest_upstream_main_observed"] == {
-        "commit": "937222f4ec80e6991e934e0b140b60e0030c55fd",
-        "observed_at": "2026-07-30",
+        "commit": "cc4cab2f592e60a197e796506de9168f74baf3ea",
+        "observed_at": "2026-07-31",
         "included": False,
     }
     for key in ("official_release_commit", "upstream_base_commit", "turn_gate_source_commit"):
@@ -99,7 +100,7 @@ def test_distribution_uses_the_fork_source_installer_not_python_artifacts():
         "default_https_repository": "https://github.com/aisilun/hermes-agent.git",
         "default_ssh_repository": "git@github.com:aisilun/hermes-agent.git",
         "default_branch": "asl/production",
-        "planned_ref": "v0.19.0-asl.1",
+        "planned_ref": EXPECTED_TAG,
         "unsupported_artifacts": ["wheel", "sdist", "pypi"],
     }
 
@@ -141,21 +142,21 @@ def test_asl_fork_contract_keeps_release_and_activation_closed():
     }
 
 
-def test_asl_fork_release_state_is_official_and_live_activation_stays_closed():
+def test_asl_fork_patch_candidate_keeps_tag_release_and_live_activation_closed():
     contract = _load_contract()
 
-    assert contract["candidate"]["status"] == "official"
+    assert contract["candidate"]["status"] == "candidate"
     assert contract["release_state"] == {
-        "official_source_version": EXPECTED_VERSION,
-        "source_status": "official",
-        "previous_official_version": None,
+        "official_source_version": CURRENT_OFFICIAL_VERSION,
+        "source_status": "candidate",
+        "previous_official_version": CURRENT_OFFICIAL_VERSION,
         "github_release_requires_live_readback": True,
         "fleet_applied": False,
     }
     assert contract["authorization"] == {
         "merge_authorized": True,
-        "tag_authorized": True,
-        "release_authorized": True,
+        "tag_authorized": False,
+        "release_authorized": False,
         "production_activation_authorized": False,
         "fleet_apply_authorized": False,
     }

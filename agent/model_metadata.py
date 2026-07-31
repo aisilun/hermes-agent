@@ -2369,6 +2369,20 @@ def get_model_context_length(
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
 
+    # Keep Codex OAuth provider-aware even when the credential broker rewrites
+    # its endpoint to localhost; otherwise the custom-endpoint fallback returns
+    # the direct-API 1.05M window before the Codex 272K cap is consulted.
+    if (provider or "").strip().lower() == "openai-codex":
+        codex_ctx, codex_source = _resolve_codex_oauth_context_length_with_source(
+            model, access_token=api_key or "",
+        )
+        if codex_ctx:
+            # Only a successful authenticated catalogue response is safe to
+            # persist. The static fallback remains runtime-only.
+            if base_url and codex_source == "live":
+                save_context_length(model, base_url, codex_ctx)
+            return codex_ctx
+
     # Endpoint-scoped provider metadata. Keep this ahead of the persistent
     # cache so a value learned for a multiplexed provider's other endpoint
     # cannot override the endpoint where the model was actually validated.
@@ -2633,20 +2647,6 @@ def get_model_context_length(
             if base_url and source == "portal":
                 save_context_length(model, base_url, ctx)
             return ctx
-    if effective_provider == "openai-codex":
-        # Codex OAuth enforces lower context limits than the direct OpenAI
-        # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K
-        # on Codex). Authoritative source is Codex's own /models endpoint.
-        codex_ctx, codex_source = _resolve_codex_oauth_context_length_with_source(
-            model, access_token=api_key or "",
-        )
-        if codex_ctx:
-            # Only a successful authenticated catalogue response is safe to
-            # persist. The static fallback is deliberately runtime-only so a
-            # transient OAuth/network failure cannot poison future probes.
-            if base_url and codex_source == "live":
-                save_context_length(model, base_url, codex_ctx)
-            return codex_ctx
     if effective_provider == "gmi" and base_url:
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.

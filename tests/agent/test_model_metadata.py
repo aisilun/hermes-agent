@@ -1077,3 +1077,23 @@ class TestMoAContextLength:
         assert compressor.threshold_tokens == configured_context // 2
         endpoint_probe.assert_not_called()
 
+
+# Regression: Codex OAuth routed through the local OAuth broker must retain the
+# provider-enforced 272K cap instead of falling into the direct-API 1.05M catalog.
+def test_codex_oauth_local_broker_keeps_provider_cap():
+    from unittest.mock import patch
+    from agent.model_metadata import get_model_context_length
+
+    with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+         patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None), \
+         patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+         patch("agent.model_metadata._query_local_context_length", return_value=None):
+        ctx = get_model_context_length(
+            "gpt-5.6-sol",
+            provider="openai-codex",
+            base_url="http://127.0.0.1:17880/accounts/B/backend-api/codex",
+            api_key="",
+        )
+
+    assert ctx == 272_000
+

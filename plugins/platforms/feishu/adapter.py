@@ -236,11 +236,163 @@ _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "deny": "deny",
 }
 _APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "once": "Approved once",
-    "session": "Approved for session",
-    "always": "Approved permanently",
-    "deny": "Denied",
+    "once": "已批准（仅本次）",
+    "session": "已批准（本会话）",
+    "always": "已批准（永久）",
+    "deny": "已拒绝",
 }
+
+_APPROVAL_DESTRUCTIVE_PATTERNS = (
+    r"\brm\s+-[a-z]*r[a-z]*f?\b",
+    r"\brmdir\b",
+    r"\b(delete|destroy|drop|truncate)\b",
+    r"git\s+(reset\s+--hard|clean\s+-f)",
+    r"(fleet\s+apply|production\s+deploy|prod(?:uction)?\s+release)",
+)
+_APPROVAL_CREDENTIAL_PATTERNS = (
+    r"(?:^|[\s/_.-])(\.env|auth\.json|credentials?|secret|token|password|ssh|ak|sk)(?:$|[\s/_.-])",
+)
+_APPROVAL_NETWORK_PATTERNS = (
+    r"\b(curl|wget|ssh|scp|nc|telnet)\b",
+    r"\b(git\s+(clone|fetch|pull|push)|gh\s+)\b",
+    r"https?://",
+)
+_APPROVAL_WRITE_PATTERNS = (
+    r"(?:^|\s)(>>?|<<?)\s*\S+",
+    r"\b(write_file|patch|tee|mv|cp|chmod|chown)\b",
+    r"\b(git\s+(commit|push)|kubectl\s+apply|hermes\s+config\s+set)\b",
+)
+_APPROVAL_READ_ONLY_PATTERN = re.compile(
+    r"^\s*(?:pwd|ls(?:\s|$)|find\s|git\s+(?:status|diff|log|show)|"
+    r"ps\s|top\b|date\b|which\s|whoami\b|hermes\s+(?:status|doctor))",
+    re.IGNORECASE,
+)
+
+
+def _approval_reason_text(description: str) -> str:
+    """Translate common internal approval reasons into Chinese UI text."""
+    normalized = (description or "").strip().lower()
+    if "-e/-c" in normalized or "script execution" in normalized:
+        return "通过脚本参数（-e/-c）执行，脚本可能包含多条命令。"
+    if "delet" in normalized or "remove" in normalized:
+        return "命令可能涉及删除操作，需要人工确认。"
+    if "dangerous command" in normalized:
+        return "命令命中Hermes危险操作规则，需要人工确认。"
+    return "命令需要人工确认后才能执行。"
+
+
+def _approval_risk_summary(command: str, description: str) -> str:
+    """Return a conservative display-only risk summary for an approval card."""
+    text = f"{command}\n{description}".lower()
+    destructive = any(
+        re.search(pattern, text) for pattern in _APPROVAL_DESTRUCTIVE_PATTERNS
+    )
+    credential = any(
+        re.search(pattern, text) for pattern in _APPROVAL_CREDENTIAL_PATTERNS
+    )
+    network = any(re.search(pattern, text) for pattern in _APPROVAL_NETWORK_PATTERNS)
+    write = any(re.search(pattern, text) for pattern in _APPROVAL_WRITE_PATTERNS)
+    read_only = bool(_APPROVAL_READ_ONLY_PATTERN.search(command)) and not any(
+        (destructive, credential, network, write)
+    )
+
+    if destructive or credential:
+        level = "高风险"
+        impact = (
+            "可能删除或覆盖文件、目录或数据"
+            if destructive
+            else "可能读取认证文件、密钥或令牌"
+        )
+        irreversible = "可能不可逆"
+    elif write or network:
+        level = "中风险"
+        impact = "可能修改本地内容或访问外部服务"
+        irreversible = "可能产生持久变化，请先确认目标"
+    elif read_only:
+        level = "低风险候选（规则识别为只读）"
+        impact = "预计不修改文件或配置"
+        irreversible = "未识别不可逆操作"
+    else:
+        level = "待人工确认"
+        impact = "当前规则无法确认命令的完整影响范围"
+        irreversible = "无法确认是否可逆"
+
+    credential_note = (
+        "可能涉及认证文件、密钥或令牌"
+        if credential
+        else "未识别到明显凭证读取特征（不代表绝对安全）"
+    )
+    network_note = "可能访问外部网络" if network else "未识别到明显网络访问特征"
+    caution = (
+        "不能根据当前规则确认安全，请人工检查完整命令。"
+        if level == "待人工确认"
+        else "此摘要仅供理解，不能替代人工检查完整命令。"
+    )
+    return "\n".join(
+        (
+            f"- 风险等级：{level}",
+            f"- 影响范围：{impact}",
+            f"- 不可逆性：{irreversible}",
+            f"- 凭证风险：{credential_note}",
+            f"- 网络风险：{network_note}",
+            "- 建议动作：仅本次批准",
+            f"- 注意：{caution}",
+        )
+    )
+
+
+def _build_exec_approval_card(
+    *,
+    command: str,
+    description: str,
+    approval_id: int,
+    allow_permanent: bool,
+    allow_session: bool,
+    smart_denied: bool,
+) -> Dict[str, Any]:
+    """Build the Chinese Feishu approval card without changing action semantics."""
+    cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+
+    def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": label},
+            "type": btn_type,
+            "value": {"hermes_action": action_name, "approval_id": approval_id},
+        }
+
+    actions = [_btn("✅ 仅本次批准", "approve_once", "primary")]
+    if not smart_denied and allow_session:
+        actions.append(_btn("✅ 本会话批准", "approve_session"))
+        if allow_permanent:
+            actions.append(_btn("⚠️ 永久允许", "approve_always"))
+    actions.append(_btn("❌ 拒绝", "deny", "danger"))
+
+    scope_lines = ["- 仅本次批准：只执行当前命令，不保存授权。"]
+    if not smart_denied and allow_session:
+        scope_lines.append("- 本会话批准：当前会话内的同类命令可继续执行。")
+        if allow_permanent:
+            scope_lines.append("- 永久允许：会影响后续同类命令，请谨慎选择。")
+    if smart_denied:
+        scope_lines.append("- 智能审批建议拒绝；负责人覆盖时也只允许本次操作。")
+
+    content = (
+        f"**待审批命令**\n```\n{cmd_preview}\n```\n\n"
+        f"**风险说明**\n{_approval_risk_summary(command, description)}\n\n"
+        f"**触发原因**：{_approval_reason_text(description)}\n\n"
+        f"**授权范围说明**\n{chr(10).join(scope_lines)}"
+    )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"content": "⚠️ 危险命令审批", "tag": "plain_text"},
+            "template": "orange",
+        },
+        "elements": [
+            {"tag": "markdown", "content": content},
+            {"tag": "action", "actions": actions},
+        ],
+    }
 
 
 async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> bytes:
@@ -2025,38 +2177,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             approval_id = next(self._approval_counter)
-
-            def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
-                return {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": label},
-                    "type": btn_type,
-                    "value": {"hermes_action": action_name, "approval_id": approval_id},
-                }
-
-            actions = [_btn("✅ Allow Once", "approve_once", "primary")]
-            if not smart_denied and allow_session:
-                actions.append(_btn("✅ Session", "approve_session"))
-                if allow_permanent:
-                    actions.append(_btn("✅ Always", "approve_always"))
-            actions.append(_btn("❌ Deny", "deny", "danger"))
-            card = {
-                "config": {"wide_screen_mode": True},
-                "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
-                    "template": "orange",
-                },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": self._format_exec_approval(command, description, smart_denied),
-                    },
-                    {
-                        "tag": "action",
-                        "actions": actions,
-                    },
-                ],
-            }
+            card = _build_exec_approval_card(
+                command=command,
+                description=description,
+                approval_id=approval_id,
+                allow_permanent=allow_permanent,
+                allow_session=allow_session,
+                smart_denied=smart_denied,
+            )
 
             payload = json.dumps(card, ensure_ascii=False)
             response = await self._feishu_send_with_retry(
@@ -2161,7 +2289,7 @@ class FeishuAdapter(BasePlatformAdapter):
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
+                    "content": f"{icon} **{label}**，操作人：{user_name}",
                 },
             ],
         }
@@ -2744,6 +2872,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
         sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
         if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
@@ -2804,6 +2935,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
         sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
         if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
