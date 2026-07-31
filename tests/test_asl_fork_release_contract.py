@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,9 +12,9 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "governance" / "asl-fork-release.json"
-EXPECTED_VERSION = "0.19.0+asl.2"
-EXPECTED_TAG = "v0.19.0-asl.2"
-CURRENT_OFFICIAL_VERSION = EXPECTED_VERSION
+EXPECTED_VERSION = "0.19.0+asl.3"
+EXPECTED_TAG = "v0.19.0-asl.3"
+CURRENT_OFFICIAL_VERSION = "0.19.0+asl.2"
 EXPECTED_REQUIRED_TESTS = {
     "tests/agent/test_turn_gate.py",
     "tests/agent/test_conversation_reload_gate.py",
@@ -52,7 +53,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
         "planned_tag": EXPECTED_TAG,
-        "status": "official",
+        "status": "candidate",
         "prepared_at": "2026-07-31",
     }
 
@@ -142,24 +143,42 @@ def test_asl_fork_contract_keeps_release_and_activation_closed():
     }
 
 
-def test_asl_fork_official_release_keeps_live_activation_closed():
+def test_asl_fork_candidate_keeps_release_and_activation_closed():
     contract = _load_contract()
 
-    assert contract["candidate"]["status"] == "official"
+    assert contract["candidate"]["status"] == "candidate"
     assert contract["release_state"] == {
         "official_source_version": CURRENT_OFFICIAL_VERSION,
-        "source_status": "official",
+        "source_status": "candidate",
         "previous_official_version": "0.19.0+asl.1",
         "github_release_requires_live_readback": True,
         "fleet_applied": False,
     }
     assert contract["authorization"] == {
         "merge_authorized": True,
-        "tag_authorized": True,
-        "release_authorized": True,
+        "tag_authorized": False,
+        "release_authorized": False,
         "production_activation_authorized": False,
         "fleet_apply_authorized": False,
     }
+
+
+def test_runtime_recovery_markers_are_ignored_and_not_tracked():
+    ignored = {
+        line.strip()
+        for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert ".lazy-refresh-incomplete" in ignored
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", ".lazy-refresh-incomplete"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert tracked.returncode != 0, tracked.stdout
 
 
 def test_asl_fork_contract_names_existing_required_tests():

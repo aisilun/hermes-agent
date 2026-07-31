@@ -4,17 +4,18 @@
 
 ## 当前状态
 
-- package version（包版本）：`0.19.0+asl.2`
-- release tag（正式标签）：`v0.19.0-asl.2`（由本次 release-only 合并提交创建）
+- package version（包版本）：`0.19.0+asl.3`
+- planned release tag（计划发布标签）：`v0.19.0-asl.3`（未创建、未授权）
 - production branch（生产分支）：`asl/production`
-- 状态：`official`（正式源码）
+- 状态：`candidate`（候选源码）
 - official source version（正式源码版本）：`0.19.0+asl.2`
-- Tag：`v0.19.0-asl.2`（由本次 release-only 合并提交创建）
-- GitHub Release：`v0.19.0-asl.2`（绑定 Tag 并完成正文与状态回读）
+- 当前正式 Tag：`v0.19.0-asl.2`
+- 当前正式 GitHub Release：`v0.19.0-asl.2`
+- `.3` Tag/Release：未授权、未创建
 - production activation（生产激活）：未授权
 - Fleet apply（全量应用）：未授权
 
-该状态允许完成 `.2` 源码、测试、PR、CI、指定账号单审、已授权 merge（合并）及 `.2` Tag/Release 对象级回读，并允许在临时目录进行隔离安装验证。它不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
+该状态允许完成 `.3` 源码、测试、PR、CI、指定账号单审和已授权 merge（合并），并允许在临时目录进行隔离安装验证。它不授权 `.3` Tag/Release，不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
 
 ## 来源绑定
 
@@ -39,7 +40,7 @@
 - reload（热重载）后重新发现插件并保持 fail-closed（失败关闭）；
 - 为 standalone ASL plugin（独立 ASL 插件）提供宿主边界，但不把 ASL 插件源码写入 Hermes core（核心仓）。
 
-`.2` patch candidate（补丁候选）在 `.1` 上显式承接当前 live tree（现网工作树）的生产相关语义并集：
+已发布的 `.2` 补丁在 `.1` 上显式承接当前 live tree（现网工作树）的生产相关语义并集：
 
 - Codex OAuth / custom endpoint（自定义端点）按活动 provider/base URL 施加上下文上限，避免错误使用通用 1.05M 上限；
 - Kanban 创建即 blocked（阻塞）任务写入粘性阻塞事件，并允许已有 PR 修复任务在明确 requeue/unblock（重新入队/解除阻塞）后继续；
@@ -48,6 +49,11 @@
 - 补齐 conversation compression（会话压缩失败不丢历史）及上述行为的回归测试。
 
 审计判定为已被 `.1` 吸收、因此不重复移植的 live 差异：`gateway/run.py` 活动 provider/base URL 解析，以及 upstream commits `967e078ae46e6e748cc2ca36a88e0d0146904f7a`、`75be8fb463c5159b1d17e46c59f809ce1c06633a`。未纳入 `.2` 的工作态内容：OAuth Keychain broker 支线、GrsAI 第三方图片插件、`workspace/` 与采集临时文件。
+
+`.3` patch candidate（补丁候选）只修复 `.2` 隔离安装 A–C 验收发现的两个发布缺陷：
+
+- macOS `hermes gateway install --no-start-now --no-start-on-login` 现在把参数完整传入 `launchd`，生成 `RunAtLoad=false`、`KeepAlive=false` 的 plist，安装时不 bootstrap（加载）服务；后续 plist 刷新保持该显式策略，不会静默恢复自动启动；
+- `.lazy-refresh-incomplete` 被定义为 runtime recovery marker（运行时恢复标记），从 Git 跟踪树移除并写入 `.gitignore`，不再污染固定 Tag 的源码安装。
 
 本候选不包含：独立 ASL 权限插件、真实 Feishu approval（飞书审批）配置、生产密钥、数据库迁移、生产部署或 Fleet apply。
 
@@ -72,4 +78,4 @@
 
 ## 计划回滚边界
 
-`.2` 若后续获得 Tag/Release 授权并在发布后验收失败，只允许回滚到 `0.19.0+asl.1` 的已记录 commit、Tag 与源码归档 SHA-256，并恢复原 `config.yaml`；不得通过禁用 fail-closed gate（失败关闭门）来恢复服务。生产回滚方案将在后续 Tag/Release 授权包中绑定具体来源摘要和恢复命令。
+`.3` 若后续获得 Tag/Release 授权并在发布后验收失败，只允许回滚到 `0.19.0+asl.2` 的已记录 commit、Tag 与源码归档 SHA-256，并恢复原 `config.yaml`；不得通过禁用 fail-closed gate（失败关闭门）来恢复服务。生产回滚方案将在后续 Tag/Release 授权包中绑定具体来源摘要和恢复命令。
