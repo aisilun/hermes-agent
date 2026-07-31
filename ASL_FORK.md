@@ -1,19 +1,20 @@
 # ASL Hermes 定制分支
 
-本仓库的 `aisilun/hermes-agent` 分支用于承载 ASL 生产所需、尚未进入 Hermes 上游正式版的最小 host capability（宿主能力）。机器可读的唯一候选合同是 [`governance/asl-fork-release.json`](governance/asl-fork-release.json)。
+本仓库的 `aisilun/hermes-agent` 分支用于承载 ASL 生产所需、尚未进入 Hermes 上游正式版的最小 host capability（宿主能力）。机器可读的唯一发布合同是 [`governance/asl-fork-release.json`](governance/asl-fork-release.json)。
 
 ## 当前状态
 
 - package version（包版本）：`0.19.0+asl.1`
-- planned tag（计划标签）：`v0.19.0-asl.1`
+- release tag（正式标签）：`v0.19.0-asl.1`
 - production branch（生产分支）：`asl/production`
-- 状态：`release_candidate`（发布候选）
-- Tag：未授权、未创建
-- GitHub Release：未授权、未创建
+- 状态：`official`（正式源码）
+- official source version（正式源码版本）：`0.19.0+asl.1`
+- Tag：`v0.19.0-asl.1`（发布流程绑定正式合并提交并完成对象级回读）
+- GitHub Release：`v0.19.0-asl.1`（发布流程绑定 Tag 并完成正文与状态回读）
 - production activation（生产激活）：未授权
 - Fleet apply（全量应用）：未授权
 
-该状态只允许完成源码、测试、PR、CI、指定账号单审与合并，以及在 `/tmp/asl-hermes-install-smoke-*` 内进行隔离安装验证。它不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
+该状态允许完成源码、测试、PR、CI、指定账号单审、合并以及本版本 Tag/Release 的对象级回读，并允许在 `/tmp/asl-hermes-install-smoke-*` 内进行隔离安装验证。它不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
 
 ## 来源绑定
 
@@ -57,7 +58,7 @@
 3. 在临时 `HERMES_HOME` 中完成插件发现、配置加载、Gateway 入口、工具前门和输出后门隔离验证。
 4. 保留 `setup.py` 对 wheel/sdist/PyPI（轮子包/源码包/Python 包索引发布）的官方禁令；通过 `scripts/install.sh` 从 `aisilun/hermes-agent` 的 `asl/production` 固定 Tag 和 commit 源码检出，并在全新 venv（虚拟环境）与临时 `HERMES_HOME` 中完成安装 smoke test（冒烟测试）。Windows ZIP fallback（回退更新）也必须绑定同一 fork branch（分支），不得回落到官方 `main`。
 5. PR 的 exact HEAD 通过 CI，并由指定的小沐账号单审。
-6. merge（合并）、Tag、Release、production activation、Fleet apply 分闸；后四项均需新的精确授权。
+6. merge（合并）、Tag、Release、production activation、Fleet apply 分闸；Tag/Release 只固化 GitHub canonical source（规范源码），不表示 production activation 或 Fleet apply 已授权。
 
 ## 计划回滚边界
 

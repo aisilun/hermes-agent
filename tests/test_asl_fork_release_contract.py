@@ -37,6 +37,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
     assert set(contract) == {
         "schema_version",
         "candidate",
+        "release_state",
         "source",
         "maintenance",
         "distribution",
@@ -50,7 +51,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
         "planned_tag": EXPECTED_TAG,
-        "status": "release_candidate",
+        "status": "official",
         "prepared_at": "2026-07-30",
     }
 
@@ -138,10 +139,23 @@ def test_asl_fork_contract_keeps_release_and_activation_closed():
         "upstream_tracking": "NousResearch/hermes-agent#74529",
         "reconciliation_policy": "explicit-tested-port-only",
     }
+
+
+def test_asl_fork_release_state_is_official_and_live_activation_stays_closed():
+    contract = _load_contract()
+
+    assert contract["candidate"]["status"] == "official"
+    assert contract["release_state"] == {
+        "official_source_version": EXPECTED_VERSION,
+        "source_status": "official",
+        "previous_official_version": None,
+        "github_release_requires_live_readback": True,
+        "fleet_applied": False,
+    }
     assert contract["authorization"] == {
         "merge_authorized": True,
-        "tag_authorized": False,
-        "release_authorized": False,
+        "tag_authorized": True,
+        "release_authorized": True,
         "production_activation_authorized": False,
         "fleet_apply_authorized": False,
     }
