@@ -183,3 +183,11 @@ def test_contributor_check_uses_the_pull_request_base_branch():
     assert "GITHUB_BASE_REF: ${{ github.base_ref }}" in contributor_workflow
     assert 'git merge-base "origin/${GITHUB_BASE_REF}" HEAD' in contributor_workflow
     assert "git merge-base origin/main HEAD" not in contributor_workflow
+
+
+def test_asl_production_runs_post_merge_ci_and_supports_manual_dispatch():
+    ci_workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    trigger_block = ci_workflow.split("\npermissions:", maxsplit=1)[0]
+
+    assert "  push:\n    branches: [main, asl/production]" in trigger_block
+    assert "  workflow_dispatch:" in trigger_block
