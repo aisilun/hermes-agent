@@ -1,4 +1,4 @@
-"""Machine gates for the ASL-maintained Hermes fork release candidate."""
+"""Machine gates for the official ASL-maintained Hermes fork release."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "governance" / "asl-fork-release.json"
 EXPECTED_VERSION = "0.19.0+asl.3"
 EXPECTED_TAG = "v0.19.0-asl.3"
-CURRENT_OFFICIAL_VERSION = "0.19.0+asl.2"
+CURRENT_OFFICIAL_VERSION = EXPECTED_VERSION
 EXPECTED_REQUIRED_TESTS = {
     "tests/agent/test_turn_gate.py",
     "tests/agent/test_conversation_reload_gate.py",
@@ -53,7 +53,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
         "planned_tag": EXPECTED_TAG,
-        "status": "candidate",
+        "status": "official",
         "prepared_at": "2026-07-31",
     }
 
@@ -143,21 +143,21 @@ def test_asl_fork_contract_keeps_release_and_activation_closed():
     }
 
 
-def test_asl_fork_candidate_keeps_release_and_activation_closed():
+def test_asl_fork_official_release_keeps_live_activation_closed():
     contract = _load_contract()
 
-    assert contract["candidate"]["status"] == "candidate"
+    assert contract["candidate"]["status"] == "official"
     assert contract["release_state"] == {
         "official_source_version": CURRENT_OFFICIAL_VERSION,
-        "source_status": "candidate",
-        "previous_official_version": "0.19.0+asl.1",
+        "source_status": "official",
+        "previous_official_version": "0.19.0+asl.2",
         "github_release_requires_live_readback": True,
         "fleet_applied": False,
     }
     assert contract["authorization"] == {
         "merge_authorized": True,
-        "tag_authorized": False,
-        "release_authorized": False,
+        "tag_authorized": True,
+        "release_authorized": True,
         "production_activation_authorized": False,
         "fleet_apply_authorized": False,
     }

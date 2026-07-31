@@ -5,17 +5,16 @@
 ## 当前状态
 
 - package version（包版本）：`0.19.0+asl.3`
-- planned release tag（计划发布标签）：`v0.19.0-asl.3`（未创建、未授权）
+- release tag（正式标签）：`v0.19.0-asl.3`（由本次 release-only 合并提交创建）
 - production branch（生产分支）：`asl/production`
-- 状态：`candidate`（候选源码）
-- official source version（正式源码版本）：`0.19.0+asl.2`
-- 当前正式 Tag：`v0.19.0-asl.2`
-- 当前正式 GitHub Release：`v0.19.0-asl.2`
-- `.3` Tag/Release：未授权、未创建
+- 状态：`official`（正式源码）
+- official source version（正式源码版本）：`0.19.0+asl.3`
+- 当前正式 Tag：`v0.19.0-asl.3`（由本次 release-only 合并提交创建）
+- 当前正式 GitHub Release：`v0.19.0-asl.3`（绑定该 Tag 并完成正文与状态回读）
 - production activation（生产激活）：未授权
 - Fleet apply（全量应用）：未授权
 
-该状态允许完成 `.3` 源码、测试、PR、CI、指定账号单审和已授权 merge（合并），并允许在临时目录进行隔离安装验证。它不授权 `.3` Tag/Release，不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
+该状态允许完成 `.3` 源码、测试、PR、CI、指定账号单审、已授权 merge（合并）及 `.3` Tag/Release 对象级回读，并允许在临时目录进行隔离安装验证。它不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
 
 ## 来源绑定
 
@@ -24,11 +23,11 @@
 | 上游正式 Tag | `v2026.7.20` | 最近已观察的 Hermes 正式版 |
 | 正式 Tag commit | `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` | 正式版基准事实 |
 | turn-gate upstream base | `0bd82a8a84595720ea1f14b103aeb81ca3cc50ef` | #74529 开发基线 |
-| turn-gate source head | `0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561` | 本候选承接的宿主能力源码 |
+| turn-gate source head | `0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561` | 本正式源码承接的宿主能力源码 |
 | 上游贡献线 | `NousResearch/hermes-agent#74529` | 长期官方贡献支线，不阻断 ASL 生产 |
 | 最新 upstream/main 观察值 | `cc4cab2f592e60a197e796506de9168f74baf3ea` | 2026-07-31 观察；未吸收，不追逐移动目标 |
 
-曾尝试从上游正式 Tag 仅移植 #74529 两提交，但 `agent/conversation_loop.py`、`agent/tool_executor.py`、`gateway/run.py` 等 9 个生产文件无法按上下文直接应用。候选因此绑定 #74529 自身的 exact head（精确头提交），而不是手工硬解正式 Tag 冲突，也不是静默带入约 2909 个上游未发布提交。
+曾尝试从上游正式 Tag 仅移植 #74529 两提交，但 `agent/conversation_loop.py`、`agent/tool_executor.py`、`gateway/run.py` 等 9 个生产文件无法按上下文直接应用。当前正式源码因此绑定 #74529 自身的 exact head（精确头提交），而不是手工硬解正式 Tag 冲突，也不是静默带入约 2909 个上游未发布提交。
 
 ## 定制范围
 
@@ -50,12 +49,12 @@
 
 审计判定为已被 `.1` 吸收、因此不重复移植的 live 差异：`gateway/run.py` 活动 provider/base URL 解析，以及 upstream commits `967e078ae46e6e748cc2ca36a88e0d0146904f7a`、`75be8fb463c5159b1d17e46c59f809ce1c06633a`。未纳入 `.2` 的工作态内容：OAuth Keychain broker 支线、GrsAI 第三方图片插件、`workspace/` 与采集临时文件。
 
-`.3` patch candidate（补丁候选）只修复 `.2` 隔离安装 A–C 验收发现的两个发布缺陷：
+`.3` patch release（补丁正式源码）只修复 `.2` 隔离安装 A–C 验收发现的两个发布缺陷：
 
 - macOS `hermes gateway install --no-start-now --no-start-on-login` 现在把参数完整传入 `launchd`，生成 `RunAtLoad=false`、`KeepAlive=false` 的 plist，安装时不 bootstrap（加载）服务；后续 plist 刷新保持该显式策略，不会静默恢复自动启动；
 - `.lazy-refresh-incomplete` 被定义为 runtime recovery marker（运行时恢复标记），从 Git 跟踪树移除并写入 `.gitignore`，不再污染固定 Tag 的源码安装。
 
-本候选不包含：独立 ASL 权限插件、真实 Feishu approval（飞书审批）配置、生产密钥、数据库迁移、生产部署或 Fleet apply。
+本正式源码不包含：独立 ASL 权限插件、真实 Feishu approval（飞书审批）配置、生产密钥、数据库迁移、生产部署或 Fleet apply。
 
 ## 维护责任
 
@@ -78,4 +77,4 @@
 
 ## 计划回滚边界
 
-`.3` 若后续获得 Tag/Release 授权并在发布后验收失败，只允许回滚到 `0.19.0+asl.2` 的已记录 commit、Tag 与源码归档 SHA-256，并恢复原 `config.yaml`；不得通过禁用 fail-closed gate（失败关闭门）来恢复服务。生产回滚方案将在后续 Tag/Release 授权包中绑定具体来源摘要和恢复命令。
+`.3` 若发布后验收失败，只允许回滚到 `0.19.0+asl.2` 的已记录 commit、Tag 与源码归档 SHA-256，并恢复原 `config.yaml`；不得通过禁用 fail-closed gate（失败关闭门）来恢复服务。生产回滚方案仍须在后续生产激活授权包中绑定具体来源摘要和恢复命令。
