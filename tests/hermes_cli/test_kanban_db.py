@@ -1575,3 +1575,26 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_respawn_guard_active_pr_bypassed_by_later_unblock(kanban_home):
+    """A later operator unblock authorizes remediation on the existing PR."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fix-existing-pr", assignee="alice")
+        kb.add_comment(
+            conn,
+            t,
+            "worker",
+            "PR needs remediation: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        comment_at = conn.execute(
+            "SELECT MAX(created_at) FROM task_comments WHERE task_id = ?",
+            (t,),
+        ).fetchone()[0]
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'unblocked', ?)",
+            (t, int(comment_at) + 1),
+        )
+        assert kb.check_respawn_guard(conn, t) is None

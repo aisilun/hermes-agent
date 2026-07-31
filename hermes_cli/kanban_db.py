@@ -3188,6 +3188,22 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_status == "blocked":
+                    # A creation-time blocked task is an explicit operator
+                    # hold. Persist the sticky marker in the same transaction
+                    # so no dispatcher tick can observe an ambiguous blocked
+                    # row and promote it before the marker exists.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": None,
+                            "kind": None,
+                            "recurrences": 0,
+                            "source": "initial_status",
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
@@ -5507,6 +5523,52 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+
+    # Creation-time holds have no worker run to close. Permit an operator to
+    # bind a durable reason/kind to that hold without manufacturing a run or
+    # routing through a block→unblock→re-block recurrence. Dependency routing
+    # and run-bound worker transitions still use the normal path below.
+    existing = conn.execute(
+        "SELECT status, block_recurrences FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if existing is not None and existing["status"] == "blocked":
+        if kind == "dependency" or expected_run_id is not None:
+            return False
+        recurrences = max(int(existing["block_recurrences"] or 0), 1)
+        with write_txn(conn):
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET block_kind = ?, block_recurrences = ?
+                 WHERE id = ? AND status = 'blocked' AND current_run_id IS NULL
+                """,
+                (kind, recurrences, task_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "recurrences": recurrences,
+                    "source": "existing_block_annotation",
+                },
+            )
+            blocked_task = get_task(conn, task_id)
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_blocked",
+            task_id,
+            board=get_current_board(),
+            assignee=blocked_task.assignee if blocked_task else None,
+            run_id=None,
+            reason=reason,
+        )
+        return True
+
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
@@ -7986,12 +8048,28 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    A later explicit requeue/unblock is an operator request to continue
+    #    remediation on that same PR, so it supersedes this duplicate-work
+    #    guard.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    latest_pr_comment_at: Optional[int] = None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            latest_pr_comment_at = int(c["created_at"])
+            break
+    if latest_pr_comment_at is not None:
+        requeued_after = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at >= ? "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "LIMIT 1",
+            (task_id, latest_pr_comment_at),
+        ).fetchone()
+        if not requeued_after:
             return "active_pr"
 
     return None

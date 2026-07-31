@@ -118,7 +118,7 @@ class TestFeishuExecApproval:
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "orange"
         assert "rm -rf /important" in card["elements"][0]["content"]
-        assert "dangerous deletion" in card["elements"][0]["content"]
+        assert "删除操作" in card["elements"][0]["content"]
 
         # Check buttons
         actions = card["elements"][1]["actions"]
@@ -329,7 +329,7 @@ class TestCardActionCallbackResponse:
         assert response.card.type == "raw"
         card = response.card.data
         assert card["header"]["template"] == "green"
-        assert "Approved once" in card["header"]["title"]["content"]
+        assert "已批准（仅本次）" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 
 
@@ -356,7 +356,9 @@ class TestCardActionCallbackResponse:
         assert "Old Name" not in card["elements"][0]["content"]
         assert "ou_expired" in card["elements"][0]["content"]
 
-    def test_rejects_approval_click_from_unauthorized_user(self, _patch_callback_card_types):
+    def test_rejects_approval_click_from_unauthorized_user(
+        self, _patch_callback_card_types
+    ):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -376,10 +378,13 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
+        assert 5 in adapter._approval_state
         mock_submit.assert_not_called()
 
 
-    def test_update_prompt_unauthorized_operator_returns_no_card(self, _patch_callback_card_types):
+    def test_update_prompt_unauthorized_operator_returns_no_card(
+        self, _patch_callback_card_types
+    ):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -399,6 +404,7 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
+        assert 1 in adapter._update_prompt_state
         mock_submit.assert_not_called()
 
 
@@ -445,5 +451,97 @@ class TestResolveUpdatePrompt:
 
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
+
+
+@pytest.mark.asyncio
+async def test_uses_chinese_labels_and_destructive_risk_summary():
+    adapter = _make_adapter()
+    mock_response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message_id="msg_zh_001"),
+    )
+    with patch.object(
+        adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_send:
+        await adapter.send_exec_approval(
+            chat_id="oc_12345",
+            command="rm -rf /important",
+            session_key="s",
+            description="script execution via -e/-c flag",
+        )
+
+    card = json.loads(mock_send.call_args[1]["payload"])
+    assert card["header"]["title"]["content"] == "⚠️ 危险命令审批"
+    content = card["elements"][0]["content"]
+    assert "风险等级：高风险" in content
+    assert "影响范围：可能删除或覆盖文件、目录或数据" in content
+    assert "不可逆性：可能不可逆" in content
+    assert "建议动作：仅本次批准" in content
+    assert "脚本参数（-e/-c）" in content
+    assert "script execution via -e/-c flag" not in content
+    assert r"\n" not in content
+
+    actions = card["elements"][1]["actions"]
+    assert [a["text"]["content"] for a in actions] == [
+        "✅ 仅本次批准", "✅ 本会话批准", "⚠️ 永久允许", "❌ 拒绝"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_uses_conservative_low_and_unknown_risk_labels():
+    adapter = _make_adapter()
+    mock_response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message_id="msg_zh_002"),
+    )
+    with patch.object(
+        adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_send:
+        await adapter.send_exec_approval(
+            chat_id="oc_12345", command="git status", session_key="s"
+        )
+        low_card = json.loads(mock_send.call_args[1]["payload"])
+        await adapter.send_exec_approval(
+            chat_id="oc_12345", command="custom_internal_operation --run", session_key="s"
+        )
+        unknown_card = json.loads(mock_send.call_args[1]["payload"])
+
+    low_content = low_card["elements"][0]["content"]
+    assert "风险等级：低风险候选（规则识别为只读）" in low_content
+    assert "预计不修改文件或配置" in low_content
+    assert "建议动作：仅本次批准" in low_content
+
+    unknown_content = unknown_card["elements"][0]["content"]
+    assert "风险等级：待人工确认" in unknown_content
+    assert "不能根据当前规则确认安全" in unknown_content
+    assert "建议动作：仅本次批准" in unknown_content
+
+
+@pytest.mark.asyncio
+async def test_smart_denied_keeps_only_one_shot_override():
+    adapter = _make_adapter()
+    mock_response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message_id="msg_zh_003"),
+    )
+    with patch.object(
+        adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_send:
+        await adapter.send_exec_approval(
+            chat_id="oc_12345",
+            command="rm -rf /important",
+            session_key="s",
+            smart_denied=True,
+        )
+
+    card = json.loads(mock_send.call_args[1]["payload"])
+    actions = card["elements"][1]["actions"]
+    assert [a["value"]["hermes_action"] for a in actions] == [
+        "approve_once", "deny"
+    ]
+    assert "智能审批建议拒绝" in card["elements"][0]["content"]
 
 

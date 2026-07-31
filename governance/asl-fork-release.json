@@ -2,15 +2,15 @@
   "schema_version": 1,
   "candidate": {
     "repository": "aisilun/hermes-agent",
-    "package_version": "0.19.0+asl.1",
-    "planned_tag": "v0.19.0-asl.1",
-    "status": "official",
-    "prepared_at": "2026-07-30"
+    "package_version": "0.19.0+asl.2",
+    "planned_tag": "v0.19.0-asl.2",
+    "status": "candidate",
+    "prepared_at": "2026-07-31"
   },
   "release_state": {
     "official_source_version": "0.19.0+asl.1",
-    "source_status": "official",
-    "previous_official_version": null,
+    "source_status": "candidate",
+    "previous_official_version": "0.19.0+asl.1",
     "github_release_requires_live_readback": true,
     "fleet_applied": false
   },
@@ -22,8 +22,8 @@
     "turn_gate_source_commit": "0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561",
     "upstream_pull_request": "https://github.com/NousResearch/hermes-agent/pull/74529",
     "latest_upstream_main_observed": {
-      "commit": "937222f4ec80e6991e934e0b140b60e0030c55fd",
-      "observed_at": "2026-07-30",
+      "commit": "cc4cab2f592e60a197e796506de9168f74baf3ea",
+      "observed_at": "2026-07-31",
       "included": false
     }
   },
@@ -38,7 +38,7 @@
     "default_https_repository": "https://github.com/aisilun/hermes-agent.git",
     "default_ssh_repository": "git@github.com:aisilun/hermes-agent.git",
     "default_branch": "asl/production",
-    "planned_ref": "v0.19.0-asl.1",
+    "planned_ref": "v0.19.0-asl.2",
     "unsupported_artifacts": [
       "wheel",
       "sdist",
@@ -62,8 +62,8 @@
   },
   "authorization": {
     "merge_authorized": true,
-    "tag_authorized": true,
-    "release_authorized": true,
+    "tag_authorized": false,
+    "release_authorized": false,
     "production_activation_authorized": false,
     "fleet_apply_authorized": false
   }

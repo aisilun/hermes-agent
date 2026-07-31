@@ -102,3 +102,35 @@ class TestResetNoticeSessionInfo:
         assert "anthropic" in info
         assert "base-model" not in info
 
+
+# Regression: /status must not borrow context_length from an unrelated custom
+# provider that happens to declare the same model slug.
+def test_session_info_ignores_unrelated_custom_provider_context(runner, tmp_path):
+    config = (
+        "model:\n"
+        "  default: gpt-5.6-sol\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+        "custom_providers:\n"
+        "  - name: relay\n"
+        "    base_url: http://192.168.8.102:8088/v1\n"
+        "    models:\n"
+        "      gpt-5.6-sol:\n"
+        "        context_length: 1050000\n"
+    )
+    p1, p2, p3 = _patch_info(
+        tmp_path,
+        config,
+        "gpt-5.6-sol",
+        {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "",
+        },
+    )
+    with p1, p2, p3:
+        info = runner._format_session_info()
+
+    assert "Context: 272K tokens (detected)" in info
+    assert "1.1M" not in info
+
