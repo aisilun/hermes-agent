@@ -339,6 +339,28 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
+    def test_provider_prefixed_model_applies_codex_cap_before_custom_endpoint(self):
+        """A ``openai-codex:`` model prefix is provider identity, even without an explicit arg."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch(
+            "agent.model_metadata._resolve_codex_oauth_context_length_with_source",
+            return_value=(272_000, "fallback"),
+        ) as resolve_codex, patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=1_050_000,
+        ):
+            ctx = get_model_context_length(
+                model="openai-codex:gpt-5.5",
+                base_url="http://127.0.0.1:65534/v1",
+                api_key="oauth-token",
+            )
+
+        assert ctx == 272_000
+        resolve_codex.assert_called_once_with(
+            "gpt-5.5", access_token="oauth-token"
+        )
+
 
     @pytest.mark.parametrize(
         "stale_context,live_context",
@@ -1076,4 +1098,24 @@ class TestMoAContextLength:
         assert compressor.context_length == configured_context
         assert compressor.threshold_tokens == configured_context // 2
         endpoint_probe.assert_not_called()
+
+
+# Regression: Codex OAuth routed through the local OAuth broker must retain the
+# provider-enforced 272K cap instead of falling into the direct-API 1.05M catalog.
+def test_codex_oauth_local_broker_keeps_provider_cap():
+    from unittest.mock import patch
+    from agent.model_metadata import get_model_context_length
+
+    with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+         patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None), \
+         patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+         patch("agent.model_metadata._query_local_context_length", return_value=None):
+        ctx = get_model_context_length(
+            "gpt-5.6-sol",
+            provider="openai-codex",
+            base_url="http://127.0.0.1:17880/accounts/B/backend-api/codex",
+            api_key="",
+        )
+
+    assert ctx == 272_000
 

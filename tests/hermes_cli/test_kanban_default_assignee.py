@@ -37,28 +37,35 @@ def _fake_spawn(*args, **kwargs):
 
 
 
-def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_home):
+def test_unassigned_task_auto_assigned_with_nonprivileged_default_assignee(
+    isolated_kanban_home, monkeypatch
+):
     """Core #27145 contract: with default_assignee set, an unassigned ready
     task gets the assignment applied and dispatched on the same tick. The
     DB row is mutated (assignee column + an 'assigned' event)."""
     kb, _home = isolated_kanban_home
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "worker-a")
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
-        task_id = kb.create_task(conn, title="t1", assignee=None)
+        task_id = kb.create_task(
+            conn, title="t1", assignee=None, created_by="default"
+        )
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,
-            default_assignee="default",
+            default_assignee="worker-a",
         )
     assert res.auto_assigned_default == [task_id]
     assert not res.skipped_unassigned
     assert len(res.spawned) == 1
     assert res.spawned[0][0] == task_id
-    assert res.spawned[0][1] == "default"
+    assert res.spawned[0][1] == "worker-a"
 
     with kb.connect_closing() as conn:
         row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    assert row["assignee"] == "default"
+    assert row["assignee"] == "worker-a"
 
     # 'assigned' event emitted for the audit trail
     with kb.connect_closing() as conn:
@@ -68,7 +75,7 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
         ))
     assert len(evs) == 1
     payload = json.loads(evs[0][1])
-    assert payload["assignee"] == "default"
+    assert payload["assignee"] == "worker-a"
     assert payload["source"] == "kanban.default_assignee"
 
 
@@ -83,7 +90,9 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
     kb, _home = isolated_kanban_home
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
-        task_id = kb.create_task(conn, title="t1", assignee="default")
+        task_id = kb.create_task(
+            conn, title="t1", assignee="default", created_by="default"
+        )
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn, spawn_fn=_fake_spawn, dry_run=False,

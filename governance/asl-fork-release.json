@@ -1,0 +1,144 @@
+{
+  "schema_version": 2,
+  "candidate": {
+    "repository": "aisilun/hermes-agent",
+    "package_version": "0.19.1+asl.1",
+    "planned_tag": "v0.19.1-asl.1",
+    "status": "candidate",
+    "prepared_at": "2026-08-01"
+  },
+  "release_state": {
+    "official_source_version": "0.19.0+asl.3",
+    "source_status": "candidate",
+    "previous_official_version": "0.19.0+asl.3",
+    "github_release_requires_live_readback": true,
+    "fleet_applied": false
+  },
+  "source": {
+    "upstream_repository": "NousResearch/hermes-agent",
+    "official_release_tag": "v2026.7.30",
+    "official_release_commit": "cc4cab2f592e60a197e796506de9168f74baf3ea",
+    "upstream_base_commit": "cc4cab2f592e60a197e796506de9168f74baf3ea",
+    "turn_gate_upstream_base_commit": "0bd82a8a84595720ea1f14b103aeb81ca3cc50ef",
+    "previous_asl_official_commit": "d01f138cf889ed95e7b7ff3785b89db55c52e828",
+    "turn_gate_source_commit": "0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561",
+    "privileged_delegation_source_commit": "d83815b361dd88e5e126fcece06ab6fe15290027",
+    "upstream_pull_request": "https://github.com/NousResearch/hermes-agent/pull/74529",
+    "latest_upstream_main_observed": {
+      "commit": "e444d165807f489b5c1ab8e4a612c8d09c2e67a2",
+      "observed_at": "2026-08-01",
+      "included": false
+    }
+  },
+  "maintenance": {
+    "owner": "aisilun",
+    "upstream_tracking": "NousResearch/hermes-agent#74529",
+    "reconciliation_policy": "official-tag-minimal-overlay"
+  },
+  "patch_queue": [
+    {
+      "id": "host-turn-gate",
+      "source_commits": [
+        "0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561"
+      ],
+      "upstream_coverage": "missing",
+      "decision": "retain"
+    },
+    {
+      "id": "fork-source-update-channel",
+      "source_commits": [
+        "4f6b6fad6797d0c0f996234ce9555ae9f0a29b31",
+        "0c5b6716659963f1fd4d992dfa6d10cf1e3a57e4"
+      ],
+      "upstream_coverage": "not-applicable",
+      "decision": "retain"
+    },
+    {
+      "id": "runtime-authorization-safeguards",
+      "source_commits": [
+        "7ad87b9c0cf1dbd2801b4eb7f03860bec3b795d0"
+      ],
+      "upstream_coverage": "partial",
+      "decision": "semantic-replay"
+    },
+    {
+      "id": "asl-production-ci",
+      "source_commits": [
+        "16f97e2d3aca5d48a863b901e0a27c85d0132b83"
+      ],
+      "upstream_coverage": "not-applicable",
+      "decision": "retain"
+    },
+    {
+      "id": "macos-no-start-install",
+      "source_commits": [
+        "9e152bcddc92d7130f07b413673c9c9380deb2b2"
+      ],
+      "upstream_coverage": "partial",
+      "decision": "retain-no-start-and-runtime-marker-ignore"
+    },
+    {
+      "id": "kanban-privileged-delegation",
+      "source_commits": [
+        "d83815b361dd88e5e126fcece06ab6fe15290027"
+      ],
+      "upstream_coverage": "missing",
+      "decision": "retain"
+    }
+  ],
+  "distribution": {
+    "method": "shell-installer-source-checkout",
+    "installer_path": "scripts/install.sh",
+    "default_https_repository": "https://github.com/aisilun/hermes-agent.git",
+    "default_ssh_repository": "git@github.com:aisilun/hermes-agent.git",
+    "default_branch": "asl/production",
+    "planned_ref": "v0.19.1-asl.1",
+    "unsupported_artifacts": [
+      "wheel",
+      "sdist",
+      "pypi"
+    ]
+  },
+  "verification": {
+    "required_test_files": [
+      "tests/agent/test_turn_gate.py",
+      "tests/agent/test_conversation_reload_gate.py",
+      "tests/agent/test_tool_executor_reload_gate.py",
+      "tests/agent/test_host_tool_env_bridge.py",
+      "tests/agent/test_tool_observation_dispatch.py",
+      "tests/agent/test_model_metadata.py",
+      "tests/agent/test_conversation_compression_backup.py",
+      "tests/gateway/test_reload_turn_gate.py",
+      "tests/gateway/test_multiplex_background_task_scope.py",
+      "tests/gateway/test_feishu_approval_buttons.py",
+      "tests/gateway/test_session_info.py",
+      "tests/hermes_cli/test_turn_gate_plugin.py",
+      "tests/hermes_cli/test_gateway_service.py",
+      "tests/hermes_cli/test_kanban_blocked_sticky.py",
+      "tests/hermes_cli/test_kanban_db.py",
+      "tests/hermes_cli/test_kanban_default_assignee.py",
+      "tests/hermes_cli/test_kanban_privileged_delegation.py",
+      "tests/test_asl_fork_release_contract.py",
+      "tests/hermes_cli/test_banner_git_state.py",
+      "tests/hermes_cli/test_cmd_update.py",
+      "tests/hermes_cli/test_update_zip_symlink_reject.py",
+      "tests/test_install_autostash_conflict_recovery.py"
+    ],
+    "isolated_hermes_home_required": true,
+    "upstream_preserved_blobs": {
+      "agent/lsp/manager.py": "7ba1b914f74c3728b97650ade147fa38d4c2bc53"
+    }
+  },
+  "review_gate": {
+    "policy": "trusted-xiaomu-single-review",
+    "exact_head_required": true,
+    "status": "pending"
+  },
+  "authorization": {
+    "merge_authorized": false,
+    "tag_authorized": false,
+    "release_authorized": false,
+    "production_activation_authorized": false,
+    "fleet_apply_authorized": false
+  }
+}

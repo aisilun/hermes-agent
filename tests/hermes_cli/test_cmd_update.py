@@ -219,6 +219,7 @@ class TestCmdUpdateBranchFallback:
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="0"
         )
+        mock_args.branch = "main"
 
         with patch.object(
             hm,
@@ -612,47 +613,45 @@ class TestCmdUpdateCheckBranchFlag:
 
     @patch("hermes_cli.config.detect_install_method", return_value="git")
     @patch("subprocess.run")
-    def test_check_default_main_still_prefers_upstream(
+    def test_check_default_production_uses_governed_origin_branch(
         self, mock_run, _mock_method, capsys
     ):
-        """No --branch (or --branch=None) preserves the upstream-then-origin probe."""
+        """No --branch follows the governed ASL production channel."""
         mock_run.side_effect = self._check_side_effect(
-            target_branch="main", verify_ok=True, commit_count="0"
+            target_branch="asl/production", verify_ok=True, commit_count="0"
         )
         args = SimpleNamespace(check=True, branch=None)
 
         cmd_update(args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        # Should have tried upstream first.
-        assert any("fetch" in c and "upstream" in c for c in commands), commands
-        # Compare ref is upstream/main (upstream fetch succeeded).
+        assert any("fetch origin asl/production" in c for c in commands), commands
+        assert not any("fetch" in c and "upstream" in c for c in commands), commands
         rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+        assert any("origin/asl/production" in c for c in rev_list_cmds), rev_list_cmds
 
 
-class TestCmdUpdateZipBranchRefusal:
-    """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
+class TestCmdUpdateZipBranchBinding:
+    """The ZIP fallback must download the requested fork branch."""
 
-    The ZIP fallback hard-codes a GitHub archive URL for main.zip; honoring
-    --branch arbitrarily would require remote-branch existence checks the
-    fallback can't easily do. Refusing is the right move — silently lying
-    about which branch got installed is the bug --branch was meant to prevent.
-    """
-
-    def test_zip_fallback_refuses_non_main_branch(self, capsys):
+    def test_zip_fallback_binds_download_to_requested_branch(self, capsys):
         from hermes_cli.main import _update_via_zip
 
         args = SimpleNamespace(branch="bb/gui")
-        with pytest.raises(SystemExit) as exc_info:
+        with patch(
+            "urllib.request.urlretrieve",
+            side_effect=RuntimeError("stop after URL capture"),
+        ) as download, pytest.raises(SystemExit) as exc_info:
             _update_via_zip(args)
         assert exc_info.value.code == 1
 
+        url = download.call_args.args[0]
+        assert url == (
+            "https://github.com/aisilun/hermes-agent/"
+            "archive/refs/heads/bb/gui.zip"
+        )
         out = capsys.readouterr().out
-        assert "bb/gui" in out
-        assert "not supported" in out
-        # No actual download attempted.
-        assert "Downloading latest version" not in out
+        assert "Downloading latest version" in out
 
 
 def test_is_termux_env_true_for_termux_prefix():
