@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+import agent.turn_gate as turn_gate
 from agent.turn_gate import (
     GateDecision,
     GateState,
@@ -224,6 +225,67 @@ def test_outer_turn_reuses_one_lease_and_releases_once() -> None:
     assert provider.acquire_calls == 1
     assert provider.release_calls == 1
     assert provider.validate_calls == ["tool:terminal", "output"]
+
+
+def test_initial_idempotent_disabled_config_load_does_not_drift_outer_turn() -> None:
+    request = _request()
+
+    with acquire_outer_turn(request):
+        configure_turn_gate_from_config({})
+        enforce_output_allowed()
+
+
+def test_gateway_bridge_reuses_canonical_request_for_nested_conversation() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(_request(), entrypoint="gateway")
+
+    with acquire_outer_turn(outer) as decision:
+        with turn_gate.canonical_nested_outer_turn("conversation"):
+            nested_identity = build_runtime_identity(
+                surface="conversation",
+                session_scope=outer.task_id or "task",
+                turn_id="nested-turn",
+            )
+            nested = TurnGateRequest(
+                entrypoint="conversation",
+                purpose="business",
+                task_id=outer.task_id,
+                identity=nested_identity,
+            )
+            with acquire_outer_turn(nested) as nested_decision:
+                assert nested_decision is decision
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+def test_gateway_bridge_does_not_authorize_nested_identity_change() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(_request(), entrypoint="gateway")
+    assert outer.identity is not None
+
+    with acquire_outer_turn(outer):
+        with turn_gate.canonical_nested_outer_turn("conversation"):
+            nested = replace(
+                outer,
+                entrypoint="conversation",
+                identity=replace(outer.identity, turn_id="forged-nested-turn"),
+            )
+            with pytest.raises(
+                TurnGateBlocked,
+                match="canonical outer-turn request mismatch",
+            ):
+                with acquire_outer_turn(nested):
+                    pytest.fail("changed nested identity must not run")
+        with pytest.raises(TurnGateBlocked, match="poisoned"):
+            enforce_output_allowed()
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
 
 
 def test_tool_observation_is_policy_neutral_and_forwarded_to_provider() -> None:

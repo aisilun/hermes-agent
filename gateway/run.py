@@ -5083,7 +5083,13 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-            result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+            from agent.turn_gate import canonical_nested_outer_turn
+
+            with canonical_nested_outer_turn("conversation"):
+                result = agent.run_conversation(
+                    _api_run_message,
+                    **_conversation_kwargs,
+                )
         finally:
             unregister_gateway_notify(_approval_session_key)
             # Cancel any pending clarify entries so blocked agent
