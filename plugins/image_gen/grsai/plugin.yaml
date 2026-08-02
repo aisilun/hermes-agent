@@ -1,7 +1,0 @@
-name: grsai
-version: 1.0.0
-description: "GrsAI GPT Image backend via /v1/draw/completions."
-author: ASL
-kind: backend
-requires_env:
-  - GRSAI_API_KEY

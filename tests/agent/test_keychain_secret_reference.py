@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent import keychain_secret
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY,
+    CredentialPool,
     KeychainReferenceUnresolved,
     PooledCredential,
     SOURCE_KEYCHAIN_REFERENCE,
+    STATUS_EXHAUSTED,
     _prune_stale_seeded_entries,
 )
+from agent.error_classifier import FailoverReason
 
 
 @pytest.mark.parametrize(
@@ -98,20 +102,40 @@ def test_default_backend_fails_closed_off_darwin(system):
     assert "fall back" in str(exc_info.value).lower()
 
 
-def _reference_credential(*, source=SOURCE_KEYCHAIN_REFERENCE, secret_source="keychain://svc/account"):
+def _reference_credential(
+    *,
+    credential_id="ref-1",
+    priority=0,
+    source=SOURCE_KEYCHAIN_REFERENCE,
+    secret_source="keychain://svc/account",
+    secret_fingerprint="sha256:fixture",
+):
     return PooledCredential(
         provider="custom",
-        id="ref-1",
+        id=credential_id,
         label="relay",
         auth_type=AUTH_TYPE_API_KEY,
-        priority=0,
+        priority=priority,
         source=source,
         access_token="",
         base_url="https://relay.example.invalid/v1",
         extra={
             "secret_source": secret_source,
-            "secret_fingerprint": "sha256:fixture",
+            "secret_fingerprint": secret_fingerprint,
         },
+    )
+
+
+def _manual_credential(*, credential_id="manual-1", priority=1):
+    return PooledCredential(
+        provider="custom",
+        id=credential_id,
+        label="manual fallback",
+        auth_type=AUTH_TYPE_API_KEY,
+        priority=priority,
+        source="manual",
+        access_token="healthy-runtime-secret",
+        base_url="https://relay.example.invalid/v1",
     )
 
 
@@ -157,6 +181,21 @@ def test_keychain_reference_resolution_error_is_categorized_without_secret(monke
     assert "keychain://" not in str(exc_info.value)
 
 
+def test_keychain_error_string_does_not_leak_service_or_account():
+    error = keychain_secret.KeychainError(
+        service="fixture-sensitive-service",
+        account="fixture-sensitive-account",
+        category="interaction_not_allowed",
+        os_status=-25308,
+    )
+
+    rendered = str(error)
+    assert "fixture-sensitive-service" not in rendered
+    assert "fixture-sensitive-account" not in rendered
+    assert "interaction_not_allowed" in rendered
+    assert "-25308" in rendered
+
+
 def test_keychain_reference_survives_ordinary_stale_seed_pruning():
     entries = [_reference_credential()]
     changed = _prune_stale_seeded_entries(entries, active_sources=set())
@@ -190,3 +229,163 @@ def test_invalid_keychain_reference_fails_closed_without_using_access_token():
 
     assert exc_info.value.category == "invalid_secret_source"
     assert "legacy-must-not-be-used" not in str(exc_info.value)
+
+
+def test_stable_id_failure_marks_keychain_fingerprint_siblings_without_secret_read(
+    tmp_path, monkeypatch
+):
+    """A known failed entry is quarantined by stable metadata, not Keychain I/O."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    pool = CredentialPool(
+        "custom",
+        [
+            _reference_credential(credential_id="ref-failed", priority=0),
+            _reference_credential(
+                credential_id="ref-sibling",
+                priority=1,
+                secret_source="keychain://svc/sibling",
+            ),
+            _manual_credential(priority=2),
+        ],
+    )
+
+    def keychain_locked(_ref):
+        raise keychain_secret.KeychainError(
+            category="interaction_not_allowed",
+            os_status=-25308,
+        )
+
+    keychain_reads = MagicMock(side_effect=keychain_locked)
+    monkeypatch.setattr(keychain_secret, "read_keychain_secret", keychain_reads)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=402,
+        api_key_hint="runtime-secret-used-before-keychain-locked",
+        credential_id="ref-failed",
+    )
+
+    assert next_entry is not None
+    assert next_entry.id == "manual-1"
+    assert {
+        entry.id: entry.last_status for entry in pool.entries()
+    } == {
+        "ref-failed": STATUS_EXHAUSTED,
+        "ref-sibling": STATUS_EXHAUSTED,
+        "manual-1": None,
+    }
+    keychain_reads.assert_not_called()
+
+
+def test_sibling_matching_skips_one_unresolved_keychain_reference(
+    tmp_path, monkeypatch
+):
+    """One unavailable sibling cannot abort rotation away from a failed key."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    failed = _manual_credential(credential_id="manual-failed", priority=0)
+    failed.access_token = "failed-runtime-secret"
+    pool = CredentialPool(
+        "custom",
+        [
+            failed,
+            _reference_credential(
+                credential_id="ref-unavailable",
+                priority=1,
+                secret_fingerprint="sha256:different-secret",
+            ),
+            _manual_credential(credential_id="manual-healthy", priority=2),
+        ],
+    )
+
+    def keychain_locked(_ref):
+        raise keychain_secret.KeychainError(
+            category="interaction_not_allowed",
+            os_status=-25308,
+        )
+
+    monkeypatch.setattr(keychain_secret, "read_keychain_secret", keychain_locked)
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        api_key_hint="failed-runtime-secret",
+        credential_id="manual-failed",
+    )
+
+    assert next_entry is not None
+    assert next_entry.id == "manual-healthy"
+    assert {
+        entry.id: entry.last_status for entry in pool.entries()
+    } == {
+        "manual-failed": STATUS_EXHAUSTED,
+        "ref-unavailable": None,
+        "manual-healthy": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("reason", "status_code", "has_retried_429"),
+    [
+        (FailoverReason.billing, 402, False),
+        (FailoverReason.auth, 401, False),
+        (FailoverReason.rate_limit, 429, True),
+    ],
+)
+def test_runtime_recovery_uses_stable_id_after_keychain_becomes_unavailable(
+    tmp_path,
+    monkeypatch,
+    reason,
+    status_code,
+    has_retried_429,
+):
+    """Real 402/401/429 callers keep rotating after post-selection Keychain lock."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    reference = _reference_credential(credential_id="ref-failed")
+    pool = CredentialPool("custom", [reference, _manual_credential()])
+
+    monkeypatch.setattr(
+        keychain_secret,
+        "read_keychain_secret",
+        lambda _ref: "runtime-secret-used-for-successful-selection",
+    )
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "ref-failed"
+    runtime_secret = selected.runtime_api_key
+
+    def keychain_locked(_ref):
+        raise keychain_secret.KeychainError(
+            category="interaction_not_allowed",
+            os_status=-25308,
+        )
+
+    keychain_reads = MagicMock(side_effect=keychain_locked)
+    monkeypatch.setattr(keychain_secret, "read_keychain_secret", keychain_reads)
+    agent = SimpleNamespace(
+        provider="custom",
+        api_key=runtime_secret,
+        _credential_pool=pool,
+        _credential_pool_entry_id=selected.id,
+        _swap_credential=MagicMock(),
+        _is_entitlement_failure=MagicMock(return_value=False),
+    )
+
+    from agent.agent_runtime_helpers import recover_with_credential_pool
+
+    recovered, retried_429 = recover_with_credential_pool(
+        agent,
+        status_code=status_code,
+        has_retried_429=has_retried_429,
+        classified_reason=reason,
+        error_context={"reason": "fixture-provider-failure"},
+    )
+
+    assert recovered is True
+    assert retried_429 is False
+    assert pool.entries()[0].last_status == STATUS_EXHAUSTED
+    assert agent._swap_credential.call_args.args[0].id == "manual-1"
+    keychain_reads.assert_not_called()

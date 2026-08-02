@@ -1277,6 +1277,10 @@ class TestAdapterBehavior(unittest.TestCase):
                 "all_proxy",
             )
         }
+        # On macOS, urllib/httpx can fall back to System Configuration proxies
+        # when every proxy variable is merely empty. Explicitly bypass all
+        # proxies so this test exercises the intended direct-connect guard.
+        proxy_vars.update({"NO_PROXY": "*", "no_proxy": "*"})
         with (
             patch.dict(os.environ, proxy_vars, clear=False),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),

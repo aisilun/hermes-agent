@@ -18,6 +18,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -5520,10 +5521,13 @@ def _runtime_health_lines() -> list[str]:
     if not state:
         return []
 
+    _runtime_redact: Callable[[object], str] | None = None
     try:
-        from agent.redact import redact_log_text as _runtime_redact
+        from agent.redact import redact_log_text
+
+        _runtime_redact = redact_log_text
     except Exception:
-        _runtime_redact = None
+        pass
 
     def _safe(value: object) -> str:
         if _runtime_redact is None:

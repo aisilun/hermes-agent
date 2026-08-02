@@ -1,13 +1,14 @@
 """Strict ``keychain://service/account`` references and the macOS Keychain
-adapter used by the OAuth broker and credential-pool secret references.
+adapter used by credential-pool secret references.
 
-Security policy (see docs/design/oauth-broker.md §十):
+Security policy enforced by this adapter:
 
 * Secret values travel only between this process and Security.framework via
   in-process C calls — never through external command argv, environment
   variables, ordinary files, stdout, or stderr.
-* Exception text carries service/account identifiers plus a normalized
-  OSStatus code and category, never secret bytes.
+* Exception text carries only a normalized OSStatus code and category;
+  service/account stay available as programmatic fields but are not rendered
+  by default, and secret bytes are never attached.
 * On non-Darwin platforms every read/write fails closed with
   ``KeychainUnavailable``; there is no fallback secret source.
 """
@@ -43,7 +44,7 @@ class KeychainRef:
 
 
 class KeychainError(RuntimeError):
-    """Keychain failure carrying only identifiers, category, and OSStatus."""
+    """Keychain failure with safe text and programmatic diagnostic fields."""
 
     default_category = "keychain_error"
 
@@ -64,10 +65,7 @@ class KeychainError(RuntimeError):
             detail = (
                 f"OSStatus {os_status}" if os_status is not None else "no OSStatus"
             )
-            message = (
-                f"keychain {self.category} for service={service!r} "
-                f"account={account!r} ({detail})"
-            )
+            message = f"keychain {self.category} ({detail})"
         super().__init__(message)
 
 

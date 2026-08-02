@@ -316,6 +316,31 @@ class PooledCredential:
         return self.base_url
 
 
+def _entry_secret_fingerprint(entry: PooledCredential) -> Optional[str]:
+    """Return a persisted, non-secret identity for an entry's secret."""
+    value = entry.extra.get("secret_fingerprint")
+    if isinstance(value, str) and value.startswith("sha256:"):
+        return value
+    return None
+
+
+def _entry_matches_runtime_api_key(
+    entry: PooledCredential,
+    api_key_hint: str,
+) -> bool:
+    """Match one entry without letting an unavailable Keychain stop the scan."""
+    try:
+        return entry.runtime_api_key == api_key_hint
+    except KeychainReferenceUnresolved as exc:
+        logger.warning(
+            "credential pool: skipping unresolved %s Keychain reference "
+            "while matching runtime credential (%s)",
+            entry.provider,
+            exc.category,
+        )
+        return False
+
+
 def label_from_token(token: str, fallback: str) -> str:
     claims = _decode_jwt_claims(token)
     for key in ("email", "preferred_username", "upn"):
@@ -688,7 +713,7 @@ class CredentialPool:
             current = self._current_unlocked()
             if current is not None and (
                 api_key_hint is None
-                or current.runtime_api_key == api_key_hint
+                or _entry_matches_runtime_api_key(current, api_key_hint)
             ):
                 return current.id
             if api_key_hint is None:
@@ -696,7 +721,7 @@ class CredentialPool:
             matches = [
                 entry
                 for entry in self._entries
-                if entry.runtime_api_key == api_key_hint
+                if _entry_matches_runtime_api_key(entry, api_key_hint)
             ]
             return matches[0].id if len(matches) == 1 else None
 
@@ -1665,22 +1690,16 @@ class CredentialPool:
             # explicit rollback restores it.
             if entry.extra.get("disabled") is True:
                 continue
-            # Borrowed credentials persist as metadata-only references and are
-            # hydrated from their live source on access. A single unavailable
-            # Keychain item must not crash selection or re-enable a disabled
-            # legacy credential; skip only the unresolved entry.
-            if entry.auth_type == AUTH_TYPE_API_KEY:
-                try:
-                    if not entry.runtime_api_key:
-                        continue
-                except KeychainReferenceUnresolved as exc:
-                    logger.warning(
-                        "credential pool: skipping unresolved %s Keychain "
-                        "reference (%s)",
-                        entry.provider,
-                        exc.category,
-                    )
-                    continue
+            # Ordinary API-key entries are already materialized and keep the
+            # original early empty-key check. Keychain references are deferred
+            # until after cooldown checks below so an already quarantined entry
+            # does not reopen Keychain during failure handling.
+            if (
+                entry.auth_type == AUTH_TYPE_API_KEY
+                and entry.source != SOURCE_KEYCHAIN_REFERENCE
+                and not entry.runtime_api_key
+            ):
+                continue
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
@@ -1787,6 +1806,25 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            # Borrowed credentials persist as metadata-only references and are
+            # hydrated from their live source only after status checks. A
+            # credential already quarantined by stable ID/fingerprint must not
+            # reopen Keychain merely to prove that its cooldown still applies.
+            if (
+                entry.auth_type == AUTH_TYPE_API_KEY
+                and entry.source == SOURCE_KEYCHAIN_REFERENCE
+            ):
+                try:
+                    if not entry.runtime_api_key:
+                        continue
+                except KeychainReferenceUnresolved as exc:
+                    logger.warning(
+                        "credential pool: skipping unresolved %s Keychain "
+                        "reference (%s)",
+                        entry.provider,
+                        exc.category,
+                    )
+                    continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
@@ -1879,7 +1917,11 @@ class CredentialPool:
                 # (another process already rotated), current() is None and
                 # _select_unlocked() would return the NEXT key — the wrong one.
                 entry = next(
-                    (e for e in self._entries if e.runtime_api_key == api_key_hint),
+                    (
+                        e
+                        for e in self._entries
+                        if _entry_matches_runtime_api_key(e, api_key_hint)
+                    ),
                     None,
                 )
             if entry is None and identity_supplied:
@@ -1952,13 +1994,33 @@ class CredentialPool:
             # disconnects (a ~2.5min hang with no error surfaced to the user).
             # Mark every entry sharing the failed key so the pool can reach the
             # "no available entries" state and let the error propagate.
-            failed_runtime_key = getattr(entry, "runtime_api_key", None)
-            if identity_supplied and failed_runtime_key:
+            failed_fingerprint = _entry_secret_fingerprint(entry)
+            failed_runtime_key = None
+            if not failed_fingerprint and entry.source != SOURCE_KEYCHAIN_REFERENCE:
+                try:
+                    failed_runtime_key = entry.runtime_api_key
+                except KeychainReferenceUnresolved as exc:
+                    logger.warning(
+                        "credential pool: failed entry's Keychain reference became "
+                        "unavailable during sibling matching (%s)",
+                        exc.category,
+                    )
+            if identity_supplied and (failed_fingerprint or failed_runtime_key):
                 siblings_marked = False
                 for sibling in self._entries:
                     if sibling.id == entry.id:
                         continue
-                    if sibling.runtime_api_key == failed_runtime_key:
+                    if failed_fingerprint:
+                        same_secret = (
+                            _entry_secret_fingerprint(sibling) == failed_fingerprint
+                        )
+                    else:
+                        assert failed_runtime_key is not None
+                        same_secret = _entry_matches_runtime_api_key(
+                            sibling,
+                            failed_runtime_key,
+                        )
+                    if same_secret:
                         self._mark_exhausted(
                             sibling, status_code, error_context, persist=False
                         )
@@ -2061,7 +2123,10 @@ class CredentialPool:
                         (
                             candidate
                             for candidate in self._entries
-                            if candidate.runtime_api_key == api_key_hint
+                            if _entry_matches_runtime_api_key(
+                                candidate,
+                                api_key_hint,
+                            )
                         ),
                         None,
                     )

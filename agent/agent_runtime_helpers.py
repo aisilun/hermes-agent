@@ -36,7 +36,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import STATUS_EXHAUSTED
+from agent.credential_pool import KeychainReferenceUnresolved, STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -1071,11 +1071,19 @@ def recover_with_credential_pool(
                 (e for e in pool.entries() if e.id == _credential_id),
                 None,
             )
-        if _api_key_hint:
-            current_entry = current_entry or next(
-                (e for e in pool.entries() if e.runtime_api_key == _api_key_hint),
-                None,
-            )
+        if _api_key_hint and current_entry is None:
+            for candidate in pool.entries():
+                try:
+                    if candidate.runtime_api_key == _api_key_hint:
+                        current_entry = candidate
+                        break
+                except KeychainReferenceUnresolved as exc:
+                    _ra().logger.warning(
+                        "Credential pool: skipping unresolved %s Keychain "
+                        "reference while matching rate-limit failure (%s)",
+                        getattr(candidate, "provider", "provider"),
+                        exc.category,
+                    )
         if current_entry is None:
             current_entry = pool.current()
         current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
