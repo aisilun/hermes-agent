@@ -4,12 +4,12 @@
     "repository": "aisilun/hermes-agent",
     "package_version": "0.19.1+asl.1",
     "planned_tag": "v0.19.1-asl.1",
-    "status": "candidate",
+    "status": "official",
     "prepared_at": "2026-08-01"
   },
   "release_state": {
-    "official_source_version": "0.19.0+asl.3",
-    "source_status": "candidate",
+    "official_source_version": "0.19.1+asl.1",
+    "source_status": "official",
     "previous_official_version": "0.19.0+asl.3",
     "github_release_requires_live_readback": true,
     "fleet_applied": false
@@ -144,12 +144,12 @@
   "review_gate": {
     "policy": "trusted-xiaomu-single-review",
     "exact_head_required": true,
-    "status": "pending"
+    "status": "approved"
   },
   "authorization": {
-    "merge_authorized": false,
-    "tag_authorized": false,
-    "release_authorized": false,
+    "merge_authorized": true,
+    "tag_authorized": true,
+    "release_authorized": true,
     "production_activation_authorized": false,
     "fleet_apply_authorized": false
   }
