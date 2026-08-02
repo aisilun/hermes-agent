@@ -390,3 +390,57 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+def test_systemd_status_redacts_service_output_query_values(
+    monkeypatch, tmp_path, capsys
+):
+    """Captured service status must be sanitized before terminal output."""
+    unit_path = tmp_path / "hermes-gateway.service"
+    unit_path.write_text("[Unit]\n", encoding="utf-8")
+    query_key = "access_" + "key"
+
+    monkeypatch.setattr(
+        gateway, "get_systemd_unit_path", lambda system=False: unit_path
+    )
+    monkeypatch.setattr(gateway, "_select_systemd_scope", lambda system=False: system)
+    monkeypatch.setattr(gateway, "has_conflicting_systemd_units", lambda: False)
+    monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: False)
+    monkeypatch.setattr(gateway, "systemd_unit_is_current", lambda system=False: True)
+    monkeypatch.setattr(gateway, "_runtime_health_lines", lambda: [])
+    monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (True, ""))
+
+    def fake_systemctl(args, *, system=False, **kwargs):
+        if args[0] == "status":
+            assert kwargs["capture_output"] is True
+            assert kwargs["text"] is True
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    f"connected wss://ws.example.invalid/connect?{query_key}="
+                    "fixture-access-value&ticket=fixture-ticket-value\n"
+                ),
+                stderr="",
+            )
+        if args[0] == "is-active":
+            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        if args[0] == "show":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ActiveState=active\nSubState=running\n"
+                    "Result=success\nExecMainStatus=0\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected systemctl arguments: {args}")
+
+    monkeypatch.setattr(gateway, "_run_systemctl", fake_systemctl)
+
+    gateway.systemd_status(deep=False)
+
+    output = capsys.readouterr().out
+    assert "fixture-access-value" not in output
+    assert "fixture-ticket-value" not in output
+    assert f"{query_key}=[REDACTED]" in output
+    assert "ticket=[REDACTED]" in output

@@ -1,7 +1,9 @@
 """Tests for the Feishu gateway integration."""
 
 import asyncio
+import io
 import json
+import logging
 import os
 import socket
 import tempfile
@@ -355,6 +357,118 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_nonce, 2)
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
+
+    def _capture_sdk_log(self, message_factory, *, capture_root=False):
+        import sys
+        from types import ModuleType
+
+        class _FakeWSClient:
+            def start(self):
+                message_factory()
+                raise RuntimeError("stop test client")
+
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+        )
+        stream = io.StringIO()
+        sdk_logger = logging.getLogger("Lark")
+        root_logger = logging.getLogger()
+        old_sdk_handlers = list(sdk_logger.handlers)
+        old_sdk_filters = list(sdk_logger.filters)
+        old_sdk_level = sdk_logger.level
+        old_sdk_propagate = sdk_logger.propagate
+        old_root_handlers = list(root_logger.handlers)
+        old_root_filters = list(root_logger.filters)
+        old_root_level = root_logger.level
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        sdk_logger.handlers = [] if capture_root else [handler]
+        sdk_logger.filters = []
+        sdk_logger.setLevel(logging.INFO)
+        sdk_logger.propagate = capture_root
+        if capture_root:
+            root_logger.handlers = [handler]
+            root_logger.filters = []
+            root_logger.setLevel(logging.INFO)
+
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        setattr(fake_client_module, "loop", None)
+        setattr(fake_client_module, "websockets", SimpleNamespace(connect=AsyncMock()))
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        setattr(fake_ws_module, "client", fake_client_module)
+        fake_root_module = ModuleType("lark_oapi")
+        setattr(fake_root_module, "ws", fake_ws_module)
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from plugins.platforms.feishu.adapter import _run_official_feishu_ws_client
+
+            _run_official_feishu_ws_client(_FakeWSClient(), fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+            sdk_logger.handlers = old_sdk_handlers
+            sdk_logger.filters = old_sdk_filters
+            sdk_logger.setLevel(old_sdk_level)
+            sdk_logger.propagate = old_sdk_propagate
+            root_logger.handlers = old_root_handlers
+            root_logger.filters = old_root_filters
+            root_logger.setLevel(old_root_level)
+        return stream.getvalue()
+
+    def test_official_ws_sdk_stdout_handler_redacts_query_values(self):
+        query_key = "access_" + "key"
+
+        def emit():
+            logging.getLogger("Lark").info(
+                f"connected wss://ws.example.invalid/connect?{query_key}="
+                "fixture-access-value&ticket=fixture-ticket-value"
+            )
+
+        output = self._capture_sdk_log(emit)
+        self.assertNotIn("fixture-access-value", output)
+        self.assertNotIn("fixture-ticket-value", output)
+        self.assertIn(f"{query_key}=[REDACTED]", output)
+        self.assertIn("ticket=[REDACTED]", output)
+
+    def test_official_ws_sdk_stdout_handler_redacts_exception_text(self):
+        query_key = "access_" + "key"
+
+        def emit():
+            try:
+                raise RuntimeError(
+                    f"failed wss://ws.example.invalid/connect?{query_key}="
+                    "fixture-exception-value&ticket=fixture-ticket-value"
+                )
+            except RuntimeError:
+                logging.getLogger("Lark").exception("fixture connection failure")
+
+        output = self._capture_sdk_log(emit)
+        self.assertNotIn("fixture-exception-value", output)
+        self.assertNotIn("fixture-ticket-value", output)
+        self.assertIn(f"{query_key}=[REDACTED]", output)
+        self.assertIn("ticket=[REDACTED]", output)
+
+    def test_official_ws_sdk_child_logger_redacts_through_root_handler(self):
+        query_key = "access_" + "key"
+
+        def emit():
+            logging.getLogger("Lark.ws.client").info(
+                f"connected wss://ws.example.invalid/connect?{query_key}="
+                "fixture-child-value&ticket=fixture-child-ticket"
+            )
+
+        output = self._capture_sdk_log(emit, capture_root=True)
+        self.assertNotIn("fixture-child-value", output)
+        self.assertNotIn("fixture-child-ticket", output)
+        self.assertIn(f"{query_key}=[REDACTED]", output)
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
@@ -1658,23 +1772,23 @@ class TestDedupTTL(unittest.TestCase):
 
 
 class TestGroupMentionAtAll(unittest.TestCase):
-    """Tests for @_all (Feishu @everyone) group mention routing."""
+    """@_all is everyone, not an explicit mention of this bot."""
 
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "allowlist", "FEISHU_ALLOWED_USERS": "ou_allowed"}, clear=True)
     def test_at_all_still_requires_policy_gate(self):
-        """@_all bypasses mention gating but NOT the allowlist policy."""
+        """@_all must fail mention gating even for an allowlisted sender."""
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         message = SimpleNamespace(content='{"text":"@_all attention"}', mentions=[])
-        # Non-allowlisted user — should be blocked even with @_all.
+        # Non-allowlisted user is blocked by policy.
         blocked_sender = SimpleNamespace(open_id="ou_blocked", user_id=None)
         self.assertFalse(_admits_group(adapter, message, blocked_sender, ""))
-        # Allowlisted user — should pass.
+        # Allowlisted user is still blocked: @_all is not a bot mention.
         allowed_sender = SimpleNamespace(open_id="ou_allowed", user_id=None)
-        self.assertTrue(_admits_group(adapter, message, allowed_sender, ""))
+        self.assertFalse(_admits_group(adapter, message, allowed_sender, ""))
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

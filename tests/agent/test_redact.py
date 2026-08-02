@@ -7,6 +7,21 @@ import pytest
 from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
+def test_redact_log_text_strips_every_url_query_value_for_log_sinks():
+    from agent.redact import redact_log_text
+
+    raw = (
+        "connected wss://ws.example.invalid/connect?access_key=fixture-access"
+        "&ticket=fixture-ticket&opaque"
+    )
+    safe = redact_log_text(raw)
+    assert "fixture-access" not in safe
+    assert "fixture-ticket" not in safe
+    assert "access_key=[REDACTED]" in safe
+    assert "ticket=[REDACTED]" in safe
+    assert safe.endswith("&[REDACTED]")
+
+
 @pytest.fixture(autouse=True)
 def _ensure_redaction_enabled(monkeypatch):
     """Ensure HERMES_REDACT_SECRETS is not disabled by prior test imports."""

@@ -509,6 +509,36 @@ def _redact_url_query_params(text: str) -> str:
     return _URL_WITH_QUERY_RE.sub(_sub, text)
 
 
+def redact_log_text(value: object) -> str:
+    """Redact irreversible log/diagnostic output, including all URL queries.
+
+    Ordinary tool output preserves opaque query values because a workflow may
+    still need to follow a magic link or pre-signed URL. Logs and status output
+    are persistence sinks, so every query value is removed here regardless of
+    parameter name while parameter names and URL shape remain diagnosable.
+    """
+    text = redact_sensitive_text("" if value is None else str(value), force=True)
+    if not text:
+        return text
+
+    def _sub(m: re.Match) -> str:
+        scheme = m.group(1)
+        authority = m.group(2)
+        path = m.group(3)
+        query = m.group(4)
+        fragment = m.group(5) or ""
+        redacted_pairs = []
+        for pair in query.split("&"):
+            if "=" in pair:
+                key, _, _value = pair.partition("=")
+                redacted_pairs.append(f"{key}=[REDACTED]")
+            else:
+                redacted_pairs.append("[REDACTED]")
+        return f"{scheme}://{authority}{path}?{'&'.join(redacted_pairs)}{fragment}"
+
+    return _URL_WITH_QUERY_RE.sub(_sub, text)
+
+
 def _redact_url_userinfo(text: str) -> str:
     """Strip `user:password@` from HTTP/WS/FTP URLs.
 
@@ -982,4 +1012,4 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        return redact_log_text(original)

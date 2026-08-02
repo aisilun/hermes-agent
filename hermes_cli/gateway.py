@@ -2027,6 +2027,41 @@ def _journalctl_cmd(system: bool = False) -> list[str]:
     return ["journalctl"] if system else ["journalctl", "--user"]
 
 
+def _print_redacted_text(value: object, *, stream) -> None:
+    """Force log-safe redaction before text reaches a status output stream."""
+    has_value = value is not None
+    try:
+        raw = "" if value is None else str(value)
+        from agent.redact import redact_log_text
+
+        safe = redact_log_text(raw)
+    except Exception:
+        safe = (
+            "[REDACTED - gateway status output sanitization failed]\n"
+            if has_value
+            else ""
+        )
+    if safe:
+        print(safe, end="" if safe.endswith("\n") else "\n", file=stream)
+
+
+def _print_redacted_subprocess_output(
+    cmd: list[str], *, timeout: float
+) -> subprocess.CompletedProcess:
+    """Capture command output, force redaction, then print sanitized text."""
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    _print_redacted_text(result.stdout, stream=sys.stdout)
+    _print_redacted_text(result.stderr, stream=sys.stderr)
+    return result
+
+
 def _run_systemctl(
     args: list[str], *, system: bool = False, **kwargs
 ) -> subprocess.CompletedProcess:
@@ -3488,12 +3523,17 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     if full:
         status_cmd.append("-l")
 
-    _run_systemctl(
+    status_result = _run_systemctl(
         status_cmd,
         system=system,
-        capture_output=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
+    _print_redacted_text(status_result.stdout, stream=sys.stdout)
+    _print_redacted_text(status_result.stderr, stream=sys.stderr)
 
     result = _run_systemctl(
         ["is-active", get_service_name()],
@@ -3575,7 +3615,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         ]
         if full:
             log_cmd.append("-l")
-        subprocess.run(log_cmd, timeout=10)
+        _print_redacted_subprocess_output(log_cmd, timeout=10)
 
 
 # =============================================================================
@@ -4622,7 +4662,7 @@ def launchd_status(deep: bool = False):
             print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
         else:
             print("✓ Gateway service is registered with launchd")
-            print(list_output)
+            _print_redacted_text(list_output, stream=sys.stdout)
             if fallback_pid:
                 print(f"  Detached gateway process is running (PID {fallback_pid})")
     else:
@@ -4637,7 +4677,10 @@ def launchd_status(deep: bool = False):
         if log_file.exists():
             print()
             print("Recent logs:")
-            subprocess.run(["tail", "-20", str(log_file)], timeout=10)
+            _print_redacted_subprocess_output(
+                ["tail", "-20", str(log_file)],
+                timeout=10,
+            )
 
 
 # =============================================================================
@@ -5477,6 +5520,16 @@ def _runtime_health_lines() -> list[str]:
     if not state:
         return []
 
+    try:
+        from agent.redact import redact_log_text as _runtime_redact
+    except Exception:
+        _runtime_redact = None
+
+    def _safe(value: object) -> str:
+        if _runtime_redact is None:
+            return "[REDACTED - gateway runtime status sanitization failed]"
+        return _runtime_redact("" if value is None else str(value))
+
     lines: list[str] = []
     gateway_state = state.get("gateway_state")
     exit_reason = state.get("exit_reason")
@@ -5487,7 +5540,7 @@ def _runtime_health_lines() -> list[str]:
     for platform, pdata in platforms.items():
         if pdata.get("state") == "fatal":
             message = pdata.get("error_message") or "unknown error"
-            lines.append(f"⚠ {platform}: {message}")
+            lines.append(f"⚠ {platform}: {_safe(message)}")
 
     # A persisted snapshot that still claims liveness can outlive an
     # ungracefully-killed gateway (taskkill /F, OOM, power loss) whose shutdown
@@ -5506,7 +5559,7 @@ def _runtime_health_lines() -> list[str]:
         return lines
 
     if gateway_state == "startup_failed" and exit_reason:
-        lines.append(f"⚠ Last startup issue: {exit_reason}")
+        lines.append(f"⚠ Last startup issue: {_safe(exit_reason)}")
     elif gateway_state == "draining":
         action = "restart" if restart_requested else "shutdown"
         from gateway.status import parse_active_agents
@@ -5514,7 +5567,7 @@ def _runtime_health_lines() -> list[str]:
         count = parse_active_agents(active_agents)
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
-        lines.append(f"⚠ Last shutdown reason: {exit_reason}")
+        lines.append(f"⚠ Last shutdown reason: {_safe(exit_reason)}")
 
     return lines
 

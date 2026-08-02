@@ -102,6 +102,23 @@ AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
 SOURCE_MANUAL_DEVICE_CODE = f"{SOURCE_MANUAL}:device_code"
+# Borrowed reference entries whose secret lives in the macOS Keychain and is
+# resolved only at access time. Persisted rows keep the keychain:// URI and a
+# fingerprint, never the secret value.
+SOURCE_KEYCHAIN_REFERENCE = "keychain_reference"
+
+
+class KeychainReferenceUnresolved(RuntimeError):
+    """Fail-closed resolution failure for a ``keychain_reference`` entry."""
+
+    def __init__(self, *, provider: str, entry_id: str, category: str) -> None:
+        self.provider = provider
+        self.entry_id = entry_id
+        self.category = category
+        super().__init__(
+            "credential pool: keychain reference unresolved for "
+            f"provider {provider} ({category})"
+        )
 
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
@@ -147,6 +164,7 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    "disabled",
 })
 
 
@@ -241,6 +259,8 @@ class PooledCredential:
 
     @property
     def runtime_api_key(self) -> str:
+        if self.source == SOURCE_KEYCHAIN_REFERENCE:
+            return self._resolve_keychain_reference()
         if self.provider == "nous":
             # Nous stores the runtime inference credential in agent_key for
             # compatibility. It must be a NAS invoke JWT.
@@ -260,6 +280,34 @@ class PooledCredential:
                     return token.strip()
             return ""
         return str(self.access_token or "")
+
+    def _resolve_keychain_reference(self) -> str:
+        """Resolve a ``keychain://`` reference at access time without caching."""
+        import agent.keychain_secret as keychain_secret_mod
+
+        ref_uri = self.extra.get("secret_source")
+        if not isinstance(ref_uri, str) or not ref_uri:
+            raise KeychainReferenceUnresolved(
+                provider=self.provider,
+                entry_id=self.id,
+                category="missing_secret_source",
+            )
+        try:
+            ref = keychain_secret_mod.parse_keychain_uri(ref_uri)
+        except ValueError as exc:
+            raise KeychainReferenceUnresolved(
+                provider=self.provider,
+                entry_id=self.id,
+                category="invalid_secret_source",
+            ) from exc
+        try:
+            return keychain_secret_mod.read_keychain_secret(ref)
+        except keychain_secret_mod.KeychainError as exc:
+            raise KeychainReferenceUnresolved(
+                provider=self.provider,
+                entry_id=self.id,
+                category=exc.category,
+            ) from exc
 
     @property
     def runtime_base_url(self) -> Optional[str]:
@@ -1612,11 +1660,27 @@ class CredentialPool:
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
         for entry in self._entries:
-            # Borrowed credentials persist as metadata-only references and are
-            # hydrated from their live source on load.  A stale duplicate row
-            # can remain unhydrated; never lease or select it as an empty key.
-            if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
+            # Archived by the Keychain-reference migration: excluded from
+            # selection, sync, refresh, cooldown clearing, and pruning until an
+            # explicit rollback restores it.
+            if entry.extra.get("disabled") is True:
                 continue
+            # Borrowed credentials persist as metadata-only references and are
+            # hydrated from their live source on access. A single unavailable
+            # Keychain item must not crash selection or re-enable a disabled
+            # legacy credential; skip only the unresolved entry.
+            if entry.auth_type == AUTH_TYPE_API_KEY:
+                try:
+                    if not entry.runtime_api_key:
+                        continue
+                except KeychainReferenceUnresolved as exc:
+                    logger.warning(
+                        "credential pool: skipping unresolved %s Keychain "
+                        "reference (%s)",
+                        entry.provider,
+                        exc.category,
+                    )
+                    continue
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
@@ -2639,6 +2703,10 @@ def _prune_stale_seeded_entries(
     prune_env_sources: bool = True,
 ) -> bool:
     def _is_prunable(entry: PooledCredential) -> bool:
+        # Keychain-backed entries are durable references. They are intentionally
+        # absent from singleton/env discovery and must survive ordinary loads.
+        if entry.source == SOURCE_KEYCHAIN_REFERENCE:
+            return False
         # ``env:*`` entries are persisted references that get re-hydrated from
         # the environment on every load. A process that merely lacks the env
         # var this call must NOT delete the on-disk entry for every other

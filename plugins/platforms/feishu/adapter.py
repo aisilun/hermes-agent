@@ -1464,6 +1464,45 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
 
+    from agent.redact import redact_log_text
+
+    class _FeishuSdkLogFilter(logging.Filter):
+        """Sanitize the SDK's logger before any formatter writes output."""
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            if record.name != "Lark" and not record.name.startswith("Lark."):
+                return True
+            try:
+                parts = [record.getMessage()]
+                exception_text = record.exc_text
+                if exception_text is None and record.exc_info is not None:
+                    exception_text = logging.Formatter().formatException(record.exc_info)
+                if exception_text:
+                    parts.append(exception_text)
+                if record.stack_info:
+                    parts.append(record.stack_info)
+                record.msg = redact_log_text("\n".join(parts))
+                record.args = ()
+            except Exception:
+                record.msg = "[REDACTED - Feishu SDK log sanitization failed]"
+                record.args = ()
+            finally:
+                # Formatters append these fields after filters run. Clear raw
+                # copies so exception/stack text cannot bypass sanitization.
+                record.exc_info = None
+                record.exc_text = None
+                record.stack_info = None
+            return True
+
+    sdk_logger = logging.getLogger("Lark")
+    sdk_filter = _FeishuSdkLogFilter()
+    sdk_logger.addFilter(sdk_filter)
+    sdk_handlers = list(sdk_logger.handlers)
+    root_handlers = list(logging.getLogger().handlers)
+    filtered_handlers = list(dict.fromkeys(sdk_handlers + root_handlers))
+    for handler in filtered_handlers:
+        handler.addFilter(sdk_filter)
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     ws_client_module.loop = loop
@@ -1507,6 +1546,9 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
+        sdk_logger.removeFilter(sdk_filter)
+        for handler in filtered_handlers:
+            handler.removeFilter(sdk_filter)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
         for task in pending:
             task.cancel()
@@ -4581,10 +4623,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # --- Mention detection ----------------------------------------------------
 
     def _mentions_self(self, message: Any) -> bool:
-        # @_all is Feishu's @everyone placeholder.
+        # @_all is Feishu's @everyone placeholder, not an explicit mention of
+        # this bot. Only identity/name matches below may satisfy mention gating.
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
-            return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):
             return True
