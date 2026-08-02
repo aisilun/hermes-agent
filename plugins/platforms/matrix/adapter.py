@@ -132,6 +132,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    platform_mutation,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
     _ssrf_redirect_guard,
@@ -1783,6 +1784,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         logger.info("Matrix: disconnected")
 
+    @platform_mutation
     async def send(
         self,
         chat_id: str,
@@ -1904,6 +1906,7 @@ class MatrixAdapter(BasePlatformAdapter):
     # Optional overrides
     # ------------------------------------------------------------------
 
+    @platform_mutation
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
@@ -1914,6 +1917,7 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+    @platform_mutation
     async def stop_typing(self, chat_id: str) -> None:
         """Clear the typing indicator."""
         if self._client:
@@ -1923,6 +1927,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 pass
 
 
+    @platform_mutation
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
     ) -> SendResult:
@@ -2461,6 +2466,7 @@ class MatrixAdapter(BasePlatformAdapter):
     # File helpers
     # ------------------------------------------------------------------
 
+    @platform_mutation
     async def _upload_and_send(
         self,
         room_id: str,
@@ -3376,6 +3382,7 @@ class MatrixAdapter(BasePlatformAdapter):
             inviter=inviter,
         )
 
+    @platform_mutation
     async def _join_room_by_id(self, room_id: str) -> bool:
         """Join a room by ID and refresh local caches on success."""
         if not room_id:
@@ -3421,21 +3428,34 @@ class MatrixAdapter(BasePlatformAdapter):
         if existing and not existing.done():
             return
 
+        async def _join_and_record() -> None:
+            joined = await asyncio.wait_for(
+                self._join_room_by_id(room_id), timeout=45.0
+            )
+            # Persist the DM signal from the invite once the join lands,
+            # so m.direct is authoritative even on a fresh bot account.
+            if joined and is_direct and inviter:
+                await self._record_dm_room(room_id, inviter)
+
         async def _join_invite() -> None:
             try:
-                joined = await asyncio.wait_for(
-                    self._join_room_by_id(room_id), timeout=45.0
+                await self._run_fresh_platform_mutation(
+                    "matrix-invite-join",
+                    _join_and_record,
                 )
-                # Persist the DM signal from the invite once the join lands,
-                # so m.direct is authoritative even on a fresh bot account.
-                if joined and is_direct and inviter:
-                    await self._record_dm_room(room_id, inviter)
             except asyncio.TimeoutError:
                 logger.warning("Matrix: timed out joining invite %s", room_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Matrix: blocked or failed joining invite %s: %s", room_id, exc)
             finally:
                 self._invite_join_tasks.pop(room_id, None)
 
-        self._invite_join_tasks[room_id] = asyncio.create_task(_join_invite())
+        self._invite_join_tasks[room_id] = create_detached_task(
+            _join_invite(),
+            name=f"matrix-invite-join:{room_id}",
+        )
 
     def _schedule_pending_invite_joins(self, sync_data: Dict[str, Any]) -> None:
         """Join rooms still present in rooms.invite after sync processing."""
@@ -3453,6 +3473,7 @@ class MatrixAdapter(BasePlatformAdapter):
     # Reactions (send, receive, processing lifecycle)
     # ------------------------------------------------------------------
 
+    @platform_mutation
     async def _send_reaction(
         self,
         room_id: str,
@@ -3932,6 +3953,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # outer-turn lease from a future caller that happens to schedule one.
         create_detached_task(_send())
 
+    @platform_mutation
     async def send_read_receipt(self, room_id: str, event_id: str) -> bool:
         """Send a read receipt (m.read) for an event."""
         if not self._client:
@@ -3962,6 +3984,7 @@ class MatrixAdapter(BasePlatformAdapter):
     # Message redaction
     # ------------------------------------------------------------------
 
+    @platform_mutation
     async def redact_message(
         self,
         room_id: str,
@@ -3987,6 +4010,7 @@ class MatrixAdapter(BasePlatformAdapter):
     # Room creation & management
     # ------------------------------------------------------------------
 
+    @platform_mutation
     async def create_room(
         self,
         name: str = "",
@@ -4027,6 +4051,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: create_room error: %s", exc)
             return None
 
+    @platform_mutation
     async def invite_user(self, room_id: str, user_id: str) -> bool:
         """Invite a user to a room."""
         if not self._client:
@@ -4102,6 +4127,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     _VALID_PRESENCE_STATES = frozenset(("online", "offline", "unavailable"))
 
+    @platform_mutation
     async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
         """Set the bot's presence status."""
         if not self._client:
@@ -4129,6 +4155,7 @@ class MatrixAdapter(BasePlatformAdapter):
     # Emote & notice message types
     # ------------------------------------------------------------------
 
+    @platform_mutation
     async def _send_simple_message(
         self,
         chat_id: str,
@@ -4353,6 +4380,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identities.clear()
         self._room_identity_cached_at.clear()
 
+    @platform_mutation
     async def _record_dm_room(self, room_id: str, inviter: str) -> None:
         """Persist a room as DM in m.direct account data after an invite.
 
@@ -4791,6 +4819,7 @@ class MatrixAdapter(BasePlatformAdapter):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+@platform_mutation
 async def _standalone_send(
     pconfig,
     chat_id,
