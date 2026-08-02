@@ -440,30 +440,40 @@ def _run_agent_tool_execution_middleware(
         block_error_type = "tool_scope_block"
         if block_message is None:
             block_error_type = "plugin_block"
+            authorization_failure_message = (
+                "BLOCKED: plugin pre-tool authorization failed for "
+                f"{function_name}"
+            )
 
             def _resolve_pre_tool_block():
-                try:
-                    from hermes_cli.plugins import resolve_pre_tool_block
+                from hermes_cli.plugins import resolve_pre_tool_block
 
-                    return resolve_pre_tool_block(
-                        function_name,
-                        final_args,
-                        task_id=effective_task_id or "",
-                        session_id=getattr(agent, "session_id", "") or "",
-                        tool_call_id=tool_call_id or "",
-                        turn_id=getattr(agent, "_current_turn_id", "") or "",
-                        api_request_id=getattr(agent, "_current_api_request_id", "")
-                        or "",
-                        middleware_trace=list(state["middleware_trace"]),
-                    )
-                except Exception:
-                    return None
+                return resolve_pre_tool_block(
+                    function_name,
+                    final_args,
+                    task_id=effective_task_id or "",
+                    session_id=getattr(agent, "session_id", "") or "",
+                    tool_call_id=tool_call_id or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "")
+                    or "",
+                    middleware_trace=list(state["middleware_trace"]),
+                )
 
-            block_message = (
-                _resolve_pre_tool_block()
-                if authorization_gate is None
-                else authorization_gate.run(_resolve_pre_tool_block)
-            )
+            try:
+                block_message = (
+                    _resolve_pre_tool_block()
+                    if authorization_gate is None
+                    else authorization_gate.run(_resolve_pre_tool_block)
+                )
+            except Exception:
+                logger.exception(
+                    "Plugin pre-tool authorization failed closed for %s",
+                    function_name,
+                )
+                block_message = authorization_failure_message
+            if block_message == authorization_failure_message:
+                block_error_type = "plugin_authorization_error"
 
         guardrail_decision = None
         if block_message is None:

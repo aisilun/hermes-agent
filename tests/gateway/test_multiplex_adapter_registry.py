@@ -109,6 +109,9 @@ class _SecondaryRecoveryAdapter:
     async def disconnect(self):
         self.disconnected = True
 
+    def set_turn_gate_scope_factory(self, factory):
+        self.turn_gate_scope_factory = factory
+
     def set_message_handler(self, handler):
         self.message_handler = handler
 
@@ -201,6 +204,7 @@ class TestSecondaryProfileFatalRecovery:
         tasks = list(runner._background_tasks)
         assert len(tasks) == 1
         await tasks[0]
+        assert replacement.turn_gate_scope_factory == runner._canonical_gateway_turn_scope
         assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
         assert scoped_homes
         assert all(path == Path("/profiles/reviewer") for path in scoped_homes)

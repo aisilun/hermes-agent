@@ -1,80 +1,87 @@
 # ASL Hermes 定制分支
 
-本仓库的 `aisilun/hermes-agent` 分支用于承载 ASL 生产所需、尚未进入 Hermes 上游正式版的最小 host capability（宿主能力）。机器可读的唯一发布合同是 [`governance/asl-fork-release.json`](governance/asl-fork-release.json)。
+本仓库的 `aisilun/hermes-agent` 分支只承载 ASL 生产所需、尚未被 Hermes 官方正式版等价覆盖的最小 host capability（宿主能力）。机器可读的唯一候选合同是 [`governance/asl-fork-release.json`](governance/asl-fork-release.json)。
 
 ## 当前状态
 
-- package version（包版本）：`0.19.0+asl.3`
-- release tag（正式标签）：`v0.19.0-asl.3`（由本次 release-only 合并提交创建）
+- package version（候选包版本）：`0.19.1+asl.1`
+- planned release tag（计划发布标签）：`v0.19.1-asl.1`（未创建、未授权）
 - production branch（生产分支）：`asl/production`
-- 状态：`official`（正式源码）
-- official source version（正式源码版本）：`0.19.0+asl.3`
-- 当前正式 Tag：`v0.19.0-asl.3`（由本次 release-only 合并提交创建）
-- 当前正式 GitHub Release：`v0.19.0-asl.3`（绑定该 Tag 并完成正文与状态回读）
+- source status（源码状态）：`candidate`（候选）
+- 当前 official source version（正式源码版本）：`0.19.0+asl.3`
+- 当前正式 Tag：`v0.19.0-asl.3`
+- review gate（审核门）：`trusted-xiaomu-single-review`，状态 `pending`（待审）
+- merge（合并）：未授权
+- Tag／Release：未授权
 - production activation（生产激活）：未授权
 - Fleet apply（全量应用）：未授权
 
-该状态允许完成 `.3` 源码、测试、PR、CI、指定账号单审、已授权 merge（合并）及 `.3` Tag/Release 对象级回读，并允许在临时目录进行隔离安装验证。它不表示可生产安装，不允许写入 `default` profile（默认配置档案），也不允许重启 Gateway（网关）。
+本候选只允许完成隔离源码重建、作者自检、push（推送）、PR、exact-head CI（精确头提交持续集成）并停在稳定 PR 等待小沐单审。它不允许合并、创建 Tag/Release、安装到 `default` profile（默认配置档案）、重启 Gateway（网关）、恢复 Cron、执行数据库迁移或 Fleet apply。
 
 ## 来源绑定
 
 | 层 | 固定值 | 含义 |
 |---|---|---|
-| 上游正式 Tag | `v2026.7.20` | 最近已观察的 Hermes 正式版 |
-| 正式 Tag commit | `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` | 正式版基准事实 |
-| turn-gate upstream base | `0bd82a8a84595720ea1f14b103aeb81ca3cc50ef` | #74529 开发基线 |
-| turn-gate source head | `0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561` | 本正式源码承接的宿主能力源码 |
-| 上游贡献线 | `NousResearch/hermes-agent#74529` | 长期官方贡献支线，不阻断 ASL 生产 |
-| 最新 upstream/main 观察值 | `cc4cab2f592e60a197e796506de9168f74baf3ea` | 2026-07-31 观察；未吸收，不追逐移动目标 |
+| 上游正式 Tag | `v2026.7.30` | Hermes 官方 v0.19.1 的不可变来源 |
+| 上游正式 commit（提交） | `cc4cab2f592e60a197e796506de9168f74baf3ea` | 本候选的官方基线 |
+| 上一 ASL 正式 commit | `d01f138cf889ed95e7b7ff3785b89db55c52e828` | `0.19.0+asl.3`回滚与差分基线 |
+| turn-gate historical base（历史基点） | `0bd82a8a84595720ea1f14b103aeb81ca3cc50ef` | #74529 与现 ASL 补丁谱系的共同基点 |
+| turn-gate source head（来源头） | `0e1031a9ff05d0c0d2f44f2148b80a33ca9d3561` | 宿主回合闸门来源 |
+| privileged delegation source（特权委托来源） | `d83815b361dd88e5e126fcece06ab6fe15290027` | 原 PR #8 的安全补丁来源 |
+| 上游贡献线 | `NousResearch/hermes-agent#74529` | 长期官方贡献支线，不阻断 ASL 自控主线 |
+| 最新 upstream/main 观察值 | `e444d165807f489b5c1ab8e4a612c8d09c2e67a2` | 2026-08-01 只读观察；未纳入，不追逐移动目标 |
 
-曾尝试从上游正式 Tag 仅移植 #74529 两提交，但 `agent/conversation_loop.py`、`agent/tool_executor.py`、`gateway/run.py` 等 9 个生产文件无法按上下文直接应用。当前正式源码因此绑定 #74529 自身的 exact head（精确头提交），而不是手工硬解正式 Tag 冲突，也不是静默带入约 2909 个上游未发布提交。
+候选不是在 live root（现运行源码树）上执行 `hermes update`，也不是把 ASL `.3`整树覆盖到官方 v0.19.1。构建方式是以官方 `cc4cab2…`文件树为基线，使用共同基点完成三方语义重放，再逐项验证官方已覆盖、部分覆盖和未覆盖的能力。
 
-## 定制范围
+## 最小补丁队列
 
-已发布的 `.1` 增加 host-enforced outer turn gate（宿主强制外层轮次门）：
+| 队列项 | 来源 | 官方 v0.19.1 覆盖 | 候选决策 |
+|---|---|---|---|
+| host turn gate（宿主回合闸门） | `0e1031a…` | 未覆盖 | 保留 |
+| fork source/update channel（分支仓源码／更新通道） | `4f6b6fad…`、`0c5b671…` | 不适用 | 保留 `aisilun/hermes-agent` + `asl/production`固定通道 |
+| runtime authorization safeguards（运行时授权防护） | `7ad87b9c…` | 部分覆盖 | 语义重放 Codex 上限、Kanban 粘性阻塞、飞书安全与压缩回归 |
+| ASL production CI（生产分支持续集成） | `16f97e2d…` | 不适用 | 保留 `asl/production` push／手工触发与 PR base 感知 |
+| macOS no-start install（禁止自动启动安装） | `9e152bcd…` | 部分覆盖 | 保留 no-start 与 runtime marker ignore（运行时标记忽略规则）；不重新引入 marker 文件 |
+| Kanban privileged profile（看板特权配置档案防护） | `d83815b…` | 未覆盖 | 保留并收紧：shared Kanban（共享看板）中的`default`全链不可自动调度；`created_by`仅作审计 |
 
-- 由 `config.yaml` 绑定 required provider（必需提供者）；
-- 在 Gateway 主轮次和后台轮次入口获取 lease（租约）；
-- 工具执行前和输出发送前重新校验；
-- reload（热重载）后重新发现插件并保持 fail-closed（失败关闭）；
-- 为 standalone ASL plugin（独立 ASL 插件）提供宿主边界，但不把 ASL 插件源码写入 Hermes core（核心仓）。
+## 官方基线直接继承的能力
 
-已发布的 `.2` 补丁在 `.1` 上显式承接当前 live tree（现网工作树）的生产相关语义并集：
+- LSP idle reaper（语言服务器空闲回收器）直接继承官方 v0.19.1；`agent/lsp/manager.py`必须保持官方 blob SHA `7ba1b914f74c3728b97650ade147fa38d4c2bc53`，不再维护重复的 ASL LSP 补丁。
+- `.lazy-refresh-incomplete`在官方基线中已不再作为跟踪文件；候选继续保留 ASL 的 `.gitignore`规则，且不得重新引入该 marker（标记文件）。
+- 官方 v0.19.1 的 Cron／Gateway 生命周期、更新器、Windows 路径、依赖锁与安全修复均以官方树为准；ASL 只在机器合同列出的路径上叠加必要差异。
 
-- Codex OAuth / custom endpoint（自定义端点）按活动 provider/base URL 施加上下文上限，避免错误使用通用 1.05M 上限；
-- Kanban 创建即 blocked（阻塞）任务写入粘性阻塞事件，并允许已有 PR 修复任务在明确 requeue/unblock（重新入队/解除阻塞）后继续；
-- 飞书原生审批卡使用中文标签、风险摘要和 smart-deny 单次覆盖边界；
-- card callback（卡片回调）在同步渲染“已批准/已回答”前先执行严格 operator allowlist（操作人允许名单）检查，未授权时 fail-closed；
-- 补齐 conversation compression（会话压缩失败不丢历史）及上述行为的回归测试。
+## 保留的 ASL 不变量
 
-审计判定为已被 `.1` 吸收、因此不重复移植的 live 差异：`gateway/run.py` 活动 provider/base URL 解析，以及 upstream commits `967e078ae46e6e748cc2ca36a88e0d0146904f7a`、`75be8fb463c5159b1d17e46c59f809ce1c06633a`。未纳入 `.2` 的工作态内容：OAuth Keychain broker 支线、GrsAI 第三方图片插件、`workspace/` 与采集临时文件。
+1. **Host turn gate（宿主回合闸门）**：由 `config.yaml`绑定 required provider（必需提供者），在 Gateway 主／后台入口持有 lease（租约），工具前和输出前重新校验，reload（热重载）后继续 fail-closed。
+2. **Codex context cap（上下文上限）**：活动 provider/base URL（提供方／基础地址）优先于通用 endpoint 探测，避免本地 broker（代理）错误使用 1.05M 上限。
+3. **Kanban sticky block（看板粘性阻塞）**：创建即 blocked（阻塞）的任务记录阻塞事件，未经显式 unblock/requeue（解除阻塞／重新入队）不得被自动晋级。
+4. **Feishu approval safety（飞书审批安全）**：中文风险摘要、smart-deny（智能拒绝）仅本次覆盖，并在同步渲染成功卡片前严格检查 operator allowlist（操作人允许名单）。
+5. **Conversation compression recovery（会话压缩恢复）**：压缩失败不丢历史。
+6. **macOS no-start（禁止自动启动）**：`--no-start-now --no-start-on-login`完整透传，`RunAtLoad=false`、`KeepAlive=false`，安装时不 bootstrap（加载）服务。
+7. **Privileged profile containment（特权配置档案遏制）**：shared Kanban（共享看板）中的`default`是 code-owned privileged profile（代码持有的特权配置档案），且全链 non-dispatchable（不可自动调度）。`created_by`只保存审计来源，不参与授权；create／assign／promote／unblock／claim／review-claim／dispatcher／`kanban.default_assignee`／decompose fallback（分解回退）／spawn 均在凭据读取与副作用前失败关闭。`blocked`控制卡可保存，但不能被晋级、领取或派发；真正隔离的内存 DB 保持原有本地语义。
 
-`.3` patch release（补丁正式源码）只修复 `.2` 隔离安装 A–C 验收发现的两个发布缺陷：
+特权配置档案补丁不是完整 zero-trust broker（零信任授权代理）。同一 OS 用户直接修改 SQLite／进程环境、跨 profile single-use grant（跨配置档案单次授权）和不可伪造 principal binding（主体绑定）仍不属于本候选的解决范围；因此任何旧行或绕过写入仍必须在 claim／dispatch／spawn 最终边界再次失败关闭。
 
-- macOS `hermes gateway install --no-start-now --no-start-on-login` 现在把参数完整传入 `launchd`，生成 `RunAtLoad=false`、`KeepAlive=false` 的 plist，安装时不 bootstrap（加载）服务；后续 plist 刷新保持该显式策略，不会静默恢复自动启动；
-- `.lazy-refresh-incomplete` 被定义为 runtime recovery marker（运行时恢复标记），从 Git 跟踪树移除并写入 `.gitignore`，不再污染固定 Tag 的源码安装。
-
-本正式源码不包含：独立 ASL 权限插件、真实 Feishu approval（飞书审批）配置、生产密钥、数据库迁移、生产部署或 Fleet apply。
-
-## 维护责任
+## 分发与维护责任
 
 - owner（维护责任组织）：`aisilun`
-- 上游同步策略：`explicit-tested-port-only`（仅显式、经过测试的移植）
+- reconciliation policy（对账策略）：`official-tag-minimal-overlay`（官方 Tag + 最小下游覆盖层）
 - 不自动跟随 `upstream/main`
-- `asl/production` 是唯一默认 install/update/banner/release（安装、更新、启动提示与发布链接）通道；fork 的旧 `main` 不属于生产线
-- 稳定 PR 以 `0bd82a8a84595720ea1f14b103aeb81ca3cc50ef` 初始化的 `asl/production` 为 base（基线），避免把 fork `main` 落后的 4065 个上游提交混入单审
-- 任一上游移植都必须记录源 commit、冲突决策、受影响测试和候选新 SHA
-- 上游 #74529 若合并，只作为后续回归基线；不得自动替换已发布的 ASL 源码安装
+- `asl/production`是唯一默认 install/update/banner/release（安装／更新／启动提示／发布链接）通道；fork 的 `main`不属于 ASL 生产线
+- `setup.py`继续禁止 wheel/sdist/PyPI（轮子包／源码包／Python 包索引发布）；分发仍通过 `scripts/install.sh`源码检出
+- 任一后续上游移植必须记录来源 commit、冲突决策、受影响测试和新的候选 exact HEAD
+- #74529 若上游合并，只进入下一次正式对账，不自动替换已发布的 ASL 运行版本
 
-## 发布前硬门
+## PR 前硬门
 
-1. 机器合同与 `pyproject.toml`、`hermes_cli.__version__`、`uv.lock` 版本一致。
-2. 合同声明的 6 个 turn-gate 测试文件与 4 个 fork/update 测试文件全部通过。
-3. 在临时 `HERMES_HOME` 中完成插件发现、配置加载、Gateway 入口、工具前门和输出后门隔离验证。
-4. 保留 `setup.py` 对 wheel/sdist/PyPI（轮子包/源码包/Python 包索引发布）的官方禁令；通过 `scripts/install.sh` 从 `aisilun/hermes-agent` 的 `asl/production` 固定 Tag 和 commit 源码检出，并在全新 venv（虚拟环境）与临时 `HERMES_HOME` 中完成安装 smoke test（冒烟测试）。Windows ZIP fallback（回退更新）也必须绑定同一 fork branch（分支），不得回落到官方 `main`。
-5. PR 的 exact HEAD 通过 CI，并由指定的小沐账号单审。
-6. merge（合并）、Tag、Release、production activation、Fleet apply 分闸；Tag/Release 只固化 GitHub canonical source（规范源码），不表示 production activation 或 Fleet apply 已授权。
+1. `pyproject.toml`、`hermes_cli.__version__`、`uv.lock`与机器合同均为 `0.19.1+asl.1`。
+2. 机器合同列出的 required tests（必测文件）全部通过。
+3. LSP manager blob（语言服务器管理器文件对象）与官方 v0.19.1 完全一致。
+4. 在临时 `HERMES_HOME`中完成插件发现、配置加载、Gateway 入口、工具前门和输出后门隔离验证。
+5. `git diff --check <base>...HEAD`、语法／格式门、secret scan（密钥扫描）与全量 CI 全部绑定 PR exact HEAD。
+6. 作者完成全差分自检；稳定 PR 只由小沐单审一次。
+7. merge、Tag、Release、production activation、Cron 恢复、数据库迁移和 Fleet apply 继续分闸。
 
-## 计划回滚边界
+## 回滚边界
 
-`.3` 若发布后验收失败，只允许回滚到 `0.19.0+asl.2` 的已记录 commit、Tag 与源码归档 SHA-256，并恢复原 `config.yaml`；不得通过禁用 fail-closed gate（失败关闭门）来恢复服务。生产回滚方案仍须在后续生产激活授权包中绑定具体来源摘要和恢复命令。
+候选或后续隔离验收失败时，源码回滚基线是 `0.19.0+asl.3@d01f138cf889ed95e7b7ff3785b89db55c52e828`及其已记录 Tag／Release。不得通过禁用 fail-closed gate 恢复服务。真实生产回滚命令、配置快照和运行根切换只能在后续 production activation（生产激活）授权包中确定。

@@ -128,6 +128,25 @@ def _check_kanban_orchestrator_mode() -> bool:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _runtime_profile_name() -> str:
+    """Resolve the profile that owns this tool process.
+
+    Direct default sessions do not always export ``HERMES_PROFILE``.  Falling
+    back to the profile resolver preserves trusted self-origin without
+    treating a generic ``worker`` label as a privileged principal.
+    """
+    for key in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "worker"
+    except Exception:
+        return "worker"
+
+
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
     if arg:
@@ -1234,7 +1253,7 @@ def _handle_create(args: dict, **kw) -> str:
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
                 initial_status=str(initial_status),
-                created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                created_by=_runtime_profile_name(),
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)

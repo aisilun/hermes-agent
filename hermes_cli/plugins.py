@@ -333,6 +333,16 @@ class LoadedPlugin:
     deferred: bool = False
 
 
+@dataclass
+class _OwnedRegistration:
+    """One reversible host registration attributed to a plugin owner."""
+
+    owner_id: str
+    surface: str
+    key: str
+    cleanup: Callable[[], None] = field(repr=False, compare=False)
+
+
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
@@ -346,6 +356,57 @@ class PluginContext:
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
         self._subagent_lifecycle: Any = None
+
+    @property
+    def _owner_id(self) -> str:
+        return self.manifest.key or self.manifest.name
+
+    @staticmethod
+    def _read_registry_slot(
+        module: Any,
+        mapping_attr: str,
+        key: str,
+        lock_attr: Optional[str] = "_lock",
+    ) -> tuple[bool, Any]:
+        mapping = getattr(module, mapping_attr)
+        lock = getattr(module, lock_attr) if lock_attr else None
+        if lock is None:
+            return key in mapping, mapping.get(key)
+        with lock:
+            return key in mapping, mapping.get(key)
+
+    def _record_registry_slot(
+        self,
+        *,
+        surface: str,
+        module: Any,
+        mapping_attr: str,
+        key: str,
+        prior_present: bool,
+        prior: Any,
+        installed: Any,
+        lock_attr: Optional[str] = "_lock",
+    ) -> None:
+        if installed is prior:
+            return
+        _, current = self._read_registry_slot(
+            module,
+            mapping_attr,
+            key,
+            lock_attr=lock_attr,
+        )
+        if current is not installed:
+            return
+        self._manager._record_mapping_registration(
+            owner_id=self._owner_id,
+            surface=surface,
+            key=key,
+            mapping=getattr(module, mapping_attr),
+            installed=installed,
+            prior_present=prior_present,
+            prior=prior,
+            lock=getattr(module, lock_attr) if lock_attr else None,
+        )
 
     # -- host-owned LLM access ----------------------------------------------
 
@@ -447,6 +508,12 @@ class PluginContext:
 
         from tools.registry import registry
 
+        registry_lock = getattr(registry, "_lock")
+        with registry_lock:
+            prior_entry = getattr(registry, "_tools").get(name)
+            prior_check_present = toolset in getattr(registry, "_toolset_checks")
+            prior_check = getattr(registry, "_toolset_checks").get(toolset)
+
         registry.register(
             name=name,
             toolset=toolset,
@@ -459,6 +526,34 @@ class PluginContext:
             emoji=emoji,
             override=override,
         )
+        installed_entry = registry.get_entry(name)
+        if installed_entry is not prior_entry:
+            def _cleanup_tool_registration() -> None:
+                with registry_lock:
+                    tools = getattr(registry, "_tools")
+                    if tools.get(name) is not installed_entry:
+                        return
+                    if prior_entry is None:
+                        tools.pop(name, None)
+                    else:
+                        tools[name] = prior_entry
+                    toolset_checks = getattr(registry, "_toolset_checks")
+                    if prior_check_present:
+                        toolset_checks[toolset] = prior_check
+                    elif toolset_checks.get(toolset) is check_fn:
+                        toolset_checks.pop(toolset, None)
+                    setattr(
+                        registry,
+                        "_generation",
+                        getattr(registry, "_generation") + 1,
+                    )
+
+            self._manager._record_owned_registration(
+                self._owner_id,
+                "tool",
+                name,
+                _cleanup_tool_registration,
+            )
         self._manager._plugin_tool_names.add(name)
         logger.debug(
             "Plugin %s registered tool: %s%s",
@@ -534,7 +629,9 @@ class PluginContext:
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
         as the default dispatch function via ``set_defaults(func=...)``."""
-        self._manager._cli_commands[name] = {
+        prior_present = name in self._manager._cli_commands
+        prior = self._manager._cli_commands.get(name)
+        entry = {
             "name": name,
             "help": help,
             "description": description,
@@ -542,6 +639,16 @@ class PluginContext:
             "handler_fn": handler_fn,
             "plugin": self.manifest.name,
         }
+        self._manager._cli_commands[name] = entry
+        self._manager._record_mapping_registration(
+            owner_id=self._owner_id,
+            surface="cli_command",
+            key=name,
+            mapping=self._manager._cli_commands,
+            installed=entry,
+            prior_present=prior_present,
+            prior=prior,
+        )
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
 
     # -- slash command registration -------------------------------------------
@@ -592,12 +699,24 @@ class PluginContext:
         except Exception:
             pass  # If commands module isn't available, skip the check
 
-        self._manager._plugin_commands[clean] = {
+        prior_present = clean in self._manager._plugin_commands
+        prior = self._manager._plugin_commands.get(clean)
+        entry = {
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
         }
+        self._manager._plugin_commands[clean] = entry
+        self._manager._record_mapping_registration(
+            owner_id=self._owner_id,
+            surface="slash_command",
+            key=clean,
+            mapping=self._manager._plugin_commands,
+            installed=entry,
+            prior_present=prior_present,
+            prior=prior,
+        )
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
     # -- tool dispatch -------------------------------------------------------
@@ -657,7 +776,19 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        prior_engine = self._manager._context_engine
         self._manager._context_engine = engine
+
+        def _cleanup_context_engine() -> None:
+            if self._manager._context_engine is engine:
+                self._manager._context_engine = prior_engine
+
+        self._manager._record_owned_registration(
+            self._owner_id,
+            "context_engine",
+            getattr(engine, "name", "context_engine"),
+            _cleanup_context_engine,
+        )
         logger.info(
             "Plugin '%s' registered context engine: %s",
             self.manifest.name, engine.name,
@@ -675,7 +806,7 @@ class PluginContext:
         tool calls.
         """
         from agent.image_gen_provider import ImageGenProvider
-        from agent.image_gen_registry import register_provider
+        import agent.image_gen_registry as image_gen_registry
 
         if not isinstance(provider, ImageGenProvider):
             logger.warning(
@@ -684,7 +815,19 @@ class PluginContext:
                 self.manifest.name,
             )
             return
-        register_provider(provider)
+        prior_present, prior = self._read_registry_slot(
+            image_gen_registry, "_providers", provider.name
+        )
+        image_gen_registry.register_provider(provider)
+        self._record_registry_slot(
+            surface="image_gen_provider",
+            module=image_gen_registry,
+            mapping_attr="_providers",
+            key=provider.name,
+            prior_present=prior_present,
+            prior=prior,
+            installed=provider,
+        )
         logger.info(
             "Plugin '%s' registered image_gen provider: %s",
             self.manifest.name, provider.name,
@@ -705,9 +848,8 @@ class PluginContext:
         cannot crash the host. Same convention as
         ``register_image_gen_provider``.
         """
-        from hermes_cli.dashboard_auth import (
-            DashboardAuthProvider, register_provider,
-        )
+        from hermes_cli.dashboard_auth import DashboardAuthProvider
+        import hermes_cli.dashboard_auth.registry as dashboard_auth_registry
 
         if not isinstance(provider, DashboardAuthProvider):
             logger.warning(
@@ -716,8 +858,11 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        prior_present, prior = self._read_registry_slot(
+            dashboard_auth_registry, "_providers", provider.name
+        )
         try:
-            register_provider(provider)
+            dashboard_auth_registry.register_provider(provider)
         except (TypeError, ValueError) as e:
             logger.warning(
                 "Plugin '%s' failed to register dashboard-auth provider "
@@ -725,6 +870,15 @@ class PluginContext:
                 self.manifest.name, getattr(provider, "name", "?"), e,
             )
             return
+        self._record_registry_slot(
+            surface="dashboard_auth_provider",
+            module=dashboard_auth_registry,
+            mapping_attr="_providers",
+            key=provider.name,
+            prior_present=prior_present,
+            prior=prior,
+            installed=provider,
+        )
         logger.info(
             "Plugin '%s' registered dashboard-auth provider: %s (%s)",
             self.manifest.name, provider.name, provider.display_name,
@@ -742,7 +896,7 @@ class PluginContext:
         tool calls.
         """
         from agent.video_gen_provider import VideoGenProvider
-        from agent.video_gen_registry import register_provider as _register_video_provider
+        import agent.video_gen_registry as video_gen_registry
 
         if not isinstance(provider, VideoGenProvider):
             logger.warning(
@@ -751,7 +905,19 @@ class PluginContext:
                 self.manifest.name,
             )
             return
-        _register_video_provider(provider)
+        prior_present, prior = self._read_registry_slot(
+            video_gen_registry, "_providers", provider.name
+        )
+        video_gen_registry.register_provider(provider)
+        self._record_registry_slot(
+            surface="video_gen_provider",
+            module=video_gen_registry,
+            mapping_attr="_providers",
+            key=provider.name,
+            prior_present=prior_present,
+            prior=prior,
+            installed=provider,
+        )
         logger.info(
             "Plugin '%s' registered video_gen provider: %s",
             self.manifest.name, provider.name,
@@ -770,7 +936,7 @@ class PluginContext:
         tool calls.
         """
         from agent.web_search_provider import WebSearchProvider
-        from agent.web_search_registry import register_provider as _register_web_provider
+        import agent.web_search_registry as web_search_registry
 
         if not isinstance(provider, WebSearchProvider):
             logger.warning(
@@ -779,7 +945,19 @@ class PluginContext:
                 self.manifest.name,
             )
             return
-        _register_web_provider(provider)
+        prior_present, prior = self._read_registry_slot(
+            web_search_registry, "_providers", provider.name
+        )
+        web_search_registry.register_provider(provider)
+        self._record_registry_slot(
+            surface="web_search_provider",
+            module=web_search_registry,
+            mapping_attr="_providers",
+            key=provider.name,
+            prior_present=prior_present,
+            prior=prior,
+            installed=provider,
+        )
         logger.info(
             "Plugin '%s' registered web provider: %s",
             self.manifest.name, provider.name,
@@ -802,7 +980,7 @@ class PluginContext:
         consults the registry built up by these calls.
         """
         from agent.browser_provider import BrowserProvider
-        from agent.browser_registry import register_provider as _register_browser_provider
+        import agent.browser_registry as browser_registry
 
         if not isinstance(provider, BrowserProvider):
             logger.warning(
@@ -811,7 +989,19 @@ class PluginContext:
                 self.manifest.name,
             )
             return
-        _register_browser_provider(provider)
+        prior_present, prior = self._read_registry_slot(
+            browser_registry, "_providers", provider.name
+        )
+        browser_registry.register_provider(provider)
+        self._record_registry_slot(
+            surface="browser_provider",
+            module=browser_registry,
+            mapping_attr="_providers",
+            key=provider.name,
+            prior_present=prior_present,
+            prior=prior,
+            installed=provider,
+        )
         logger.info(
             "Plugin '%s' registered browser provider: %s",
             self.manifest.name, provider.name,
@@ -849,7 +1039,7 @@ class PluginContext:
         See the base-module docstring for the full contract.
         """
         from agent.secret_sources.base import SecretSource
-        from agent.secret_sources.registry import register_source
+        import agent.secret_sources.registry as secret_source_registry
 
         if not isinstance(source, SecretSource):
             logger.warning(
@@ -858,7 +1048,23 @@ class PluginContext:
                 self.manifest.name,
             )
             return
-        if register_source(source):
+        prior_present, prior = self._read_registry_slot(
+            secret_source_registry,
+            "_SOURCES",
+            source.name,
+            lock_attr=None,
+        )
+        if secret_source_registry.register_source(source):
+            self._record_registry_slot(
+                surface="secret_source",
+                module=secret_source_registry,
+                mapping_attr="_SOURCES",
+                key=source.name,
+                prior_present=prior_present,
+                prior=prior,
+                installed=source,
+                lock_attr=None,
+            )
             logger.info(
                 "Plugin '%s' registered secret source: %s",
                 self.manifest.name, source.name,
@@ -887,7 +1093,7 @@ class PluginContext:
         replacing it — see issue #30398 for the full design rationale.
         """
         from agent.tts_provider import TTSProvider
-        from agent.tts_registry import register_provider as _register_tts_provider
+        import agent.tts_registry as tts_registry
 
         if not isinstance(provider, TTSProvider):
             logger.warning(
@@ -896,7 +1102,23 @@ class PluginContext:
                 self.manifest.name,
             )
             return
-        _register_tts_provider(provider)
+        prior_present, prior = self._read_registry_slot(
+            tts_registry, "_providers", provider.name
+        )
+        tts_registry.register_provider(provider)
+        _, installed = self._read_registry_slot(
+            tts_registry, "_providers", provider.name
+        )
+        if installed is provider:
+            self._record_registry_slot(
+                surface="tts_provider",
+                module=tts_registry,
+                mapping_attr="_providers",
+                key=provider.name,
+                prior_present=prior_present,
+                prior=prior,
+                installed=provider,
+            )
         logger.info(
             "Plugin '%s' registered TTS provider: %s",
             self.manifest.name, provider.name,
@@ -931,7 +1153,7 @@ class PluginContext:
         backends).
         """
         from agent.transcription_provider import TranscriptionProvider
-        from agent.transcription_registry import register_provider as _register_stt_provider
+        import agent.transcription_registry as transcription_registry
 
         if not isinstance(provider, TranscriptionProvider):
             logger.warning(
@@ -940,7 +1162,23 @@ class PluginContext:
                 self.manifest.name,
             )
             return
-        _register_stt_provider(provider)
+        prior_present, prior = self._read_registry_slot(
+            transcription_registry, "_providers", provider.name
+        )
+        transcription_registry.register_provider(provider)
+        _, installed = self._read_registry_slot(
+            transcription_registry, "_providers", provider.name
+        )
+        if installed is provider:
+            self._record_registry_slot(
+                surface="transcription_provider",
+                module=transcription_registry,
+                mapping_attr="_providers",
+                key=provider.name,
+                prior_present=prior_present,
+                prior=prior,
+                installed=provider,
+            )
         logger.info(
             "Plugin '%s' registered transcription provider: %s",
             self.manifest.name, provider.name,
@@ -994,7 +1232,33 @@ class PluginContext:
             source="plugin",
             **entry_kwargs,
         )
+        entries = getattr(platform_registry, "_entries")
+        deferred = getattr(platform_registry, "_deferred")
+        prior_entry_present = name in entries
+        prior_entry = entries.get(name)
+        prior_deferred_present = name in deferred
+        prior_deferred = deferred.get(name)
         platform_registry.register(entry)
+        installed_entry = entries.get(name)
+
+        def _cleanup_platform() -> None:
+            if entries.get(name) is not installed_entry:
+                return
+            if prior_entry_present:
+                entries[name] = prior_entry
+            else:
+                entries.pop(name, None)
+            if prior_deferred_present:
+                deferred[name] = prior_deferred
+            elif deferred.get(name) is prior_deferred:
+                deferred.pop(name, None)
+
+        self._manager._record_owned_registration(
+            self._owner_id,
+            "platform",
+            name,
+            _cleanup_platform,
+        )
         self._manager._plugin_platform_names.add(name)
         logger.debug(
             "Plugin %s registered platform: %s",
@@ -1051,8 +1315,21 @@ class PluginContext:
                 f"Plugin '{self.manifest.name}' tried to register a Slack "
                 f"action handler with an empty action_id."
             )
-        self._manager._slack_action_handlers.append(
-            (action_id, callback, self.manifest.name)
+        entry = (action_id, callback, self.manifest.name)
+        self._manager._slack_action_handlers.append(entry)
+
+        def _cleanup_slack_action() -> None:
+            handlers = self._manager._slack_action_handlers
+            for index in range(len(handlers) - 1, -1, -1):
+                if handlers[index] is entry:
+                    handlers.pop(index)
+                    break
+
+        self._manager._record_owned_registration(
+            self._owner_id,
+            "slack_action_handler",
+            str(action_id),
+            _cleanup_slack_action,
         )
         logger.debug(
             "Plugin %s registered Slack action handler: %s",
@@ -1161,13 +1438,25 @@ class PluginContext:
             for k, v in defaults.items():
                 merged_defaults[k] = v
 
-        self._manager._aux_tasks[key] = {
+        prior_present = key in self._manager._aux_tasks
+        prior = self._manager._aux_tasks.get(key)
+        entry = {
             "key": key,
             "display_name": display_name,
             "description": description,
             "defaults": merged_defaults,
             "plugin": self.manifest.name,
         }
+        self._manager._aux_tasks[key] = entry
+        self._manager._record_mapping_registration(
+            owner_id=self._owner_id,
+            surface="auxiliary_task",
+            key=key,
+            mapping=self._manager._aux_tasks,
+            installed=entry,
+            prior_present=prior_present,
+            prior=prior,
+        )
         logger.debug(
             "Plugin %s registered auxiliary task: %s (%s)",
             self.manifest.name,
@@ -1185,6 +1474,8 @@ class PluginContext:
         from agent.turn_gate import (
             TURN_GATE_API_VERSION,
             register_turn_gate_provider,
+            snapshot_turn_gate_providers,
+            unregister_turn_gate_providers_by_owner,
         )
 
         if type(api_version) is not int or api_version != TURN_GATE_API_VERSION:
@@ -1194,12 +1485,35 @@ class PluginContext:
             )
 
         provider_id = self.manifest.key or self.manifest.name
+        prior_entry = snapshot_turn_gate_providers().get(provider_id)
         register_turn_gate_provider(
             provider_id,
             provider,
             owner_id=provider_id,
             api_version=api_version,
             replace=True,
+        )
+        installed_entry = snapshot_turn_gate_providers().get(provider_id)
+
+        def _cleanup_turn_gate_provider() -> None:
+            current_entry = snapshot_turn_gate_providers().get(provider_id)
+            if current_entry is not installed_entry:
+                return
+            unregister_turn_gate_providers_by_owner(provider_id)
+            if prior_entry is not None:
+                register_turn_gate_provider(
+                    provider_id,
+                    prior_entry.provider,
+                    owner_id=prior_entry.owner_id,
+                    api_version=TURN_GATE_API_VERSION,
+                    replace=True,
+                )
+
+        self._manager._record_owned_registration(
+            self._owner_id,
+            "turn_gate_provider",
+            provider_id,
+            _cleanup_turn_gate_provider,
         )
         self._manager._turn_gate_provider_ids.add(provider_id)
         logger.debug(
@@ -1223,6 +1537,23 @@ class PluginContext:
                 ", ".join(sorted(VALID_HOOKS)),
             )
         self._manager._hooks.setdefault(hook_name, []).append(callback)
+        def _cleanup_hook() -> None:
+            callbacks = self._manager._hooks.get(hook_name)
+            if callbacks is None:
+                return
+            for index in range(len(callbacks) - 1, -1, -1):
+                if callbacks[index] is callback:
+                    callbacks.pop(index)
+                    break
+            if not callbacks:
+                self._manager._hooks.pop(hook_name, None)
+
+        self._manager._record_owned_registration(
+            self._owner_id,
+            "hook",
+            hook_name,
+            _cleanup_hook,
+        )
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
     # -- middleware registration -------------------------------------------
@@ -1244,6 +1575,23 @@ class PluginContext:
                 ", ".join(sorted(VALID_MIDDLEWARE)),
             )
         self._manager._middleware.setdefault(kind, []).append(callback)
+        def _cleanup_middleware() -> None:
+            callbacks = self._manager._middleware.get(kind)
+            if callbacks is None:
+                return
+            for index in range(len(callbacks) - 1, -1, -1):
+                if callbacks[index] is callback:
+                    callbacks.pop(index)
+                    break
+            if not callbacks:
+                self._manager._middleware.pop(kind, None)
+
+        self._manager._record_owned_registration(
+            self._owner_id,
+            "middleware",
+            kind,
+            _cleanup_middleware,
+        )
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
 
     # -- skill registration -------------------------------------------------
@@ -1282,12 +1630,24 @@ class PluginContext:
             raise FileNotFoundError(f"SKILL.md not found at {path}")
 
         qualified = f"{self.manifest.name}:{name}"
-        self._manager._plugin_skills[qualified] = {
+        prior_present = qualified in self._manager._plugin_skills
+        prior = self._manager._plugin_skills.get(qualified)
+        entry = {
             "path": path,
             "plugin": self.manifest.name,
             "bare_name": name,
             "description": description,
         }
+        self._manager._plugin_skills[qualified] = entry
+        self._manager._record_mapping_registration(
+            owner_id=self._owner_id,
+            surface="skill",
+            key=qualified,
+            mapping=self._manager._plugin_skills,
+            installed=entry,
+            prior_present=prior_present,
+            prior=prior,
+        )
         logger.debug(
             "Plugin %s registered skill: %s",
             self.manifest.name, qualified,
@@ -1340,6 +1700,80 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        self._owner_ledger: List[_OwnedRegistration] = []
+
+    def _record_owned_registration(
+        self,
+        owner_id: str,
+        surface: str,
+        key: str,
+        cleanup: Callable[[], None],
+    ) -> None:
+        self._owner_ledger.append(
+            _OwnedRegistration(owner_id, surface, str(key), cleanup)
+        )
+
+    def _record_mapping_registration(
+        self,
+        *,
+        owner_id: str,
+        surface: str,
+        key: str,
+        mapping: dict,
+        installed: Any,
+        prior_present: bool,
+        prior: Any,
+        lock: Any = None,
+        on_change: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Record an identity-checked mapping write with precise prior restore."""
+
+        def _cleanup_inner() -> None:
+            if mapping.get(key) is not installed:
+                return
+            if prior_present:
+                mapping[key] = prior
+            else:
+                mapping.pop(key, None)
+            if on_change is not None:
+                on_change()
+
+        def _cleanup() -> None:
+            if lock is None:
+                _cleanup_inner()
+            else:
+                with lock:
+                    _cleanup_inner()
+
+        self._record_owned_registration(owner_id, surface, key, _cleanup)
+
+    @staticmethod
+    def _cleanup_owned_registrations(entries: List[_OwnedRegistration]) -> None:
+        first_error: Optional[BaseException] = None
+        for entry in reversed(entries):
+            try:
+                entry.cleanup()
+            except BaseException as exc:
+                logger.exception(
+                    "Failed to remove plugin-owned %s registration %s",
+                    entry.surface,
+                    entry.key,
+                )
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    def get_owner_ledger(self) -> List[Dict[str, str]]:
+        """Return a machine-readable owner/surface/key registration inventory."""
+        return [
+            {
+                "owner_id": entry.owner_id,
+                "surface": entry.surface,
+                "key": entry.key,
+            }
+            for entry in self._owner_ledger
+        ]
 
     # -----------------------------------------------------------------------
     # Public
@@ -1363,6 +1797,7 @@ class PluginManager:
         # already gone by the time it runs). A successful clean (including
         # SAFE_MODE) commits.
         _gate_registry_snapshot = None
+        _gate_host_configuration_snapshot = None
         _discovery_snapshot = None
         _host_registry_snapshot = None
         self._force_reload_prior_gate_provider_ids = (
@@ -1370,29 +1805,38 @@ class PluginManager:
         )
         if force:
             from agent.turn_gate import (
+                snapshot_turn_gate_host_configuration,
                 snapshot_turn_gate_providers,
-                unregister_turn_gate_providers_by_owner,
             )
 
             _gate_registry_snapshot = snapshot_turn_gate_providers()
+            _gate_host_configuration_snapshot = snapshot_turn_gate_host_configuration()
             _discovery_snapshot = self._snapshot_discovery_state()
             _host_registry_snapshot = self._snapshot_force_reload_host_state()
             self._force_reload_active = True
 
-            for provider_id in tuple(self._turn_gate_provider_ids):
-                unregister_turn_gate_providers_by_owner(provider_id)
+            try:
+                self._cleanup_owned_registrations(self._owner_ledger)
+            except BaseException:
+                from agent.turn_gate import (
+                    restore_turn_gate_host_configuration,
+                    restore_turn_gate_providers,
+                )
+
+                restore_turn_gate_providers(_gate_registry_snapshot)
+                restore_turn_gate_host_configuration(
+                    _gate_host_configuration_snapshot
+                )
+                self._restore_force_reload_host_state(_host_registry_snapshot)
+                self._restore_discovery_state(_discovery_snapshot)
+                self._force_reload_prior_gate_provider_ids = frozenset()
+                self._force_reload_active = False
+                raise
+            self._owner_ledger.clear()
             self._turn_gate_provider_ids.clear()
             self._plugins.clear()
-            self._hooks.clear()
-            self._middleware.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
-            self._cli_commands.clear()
-            self._plugin_commands.clear()
-            self._plugin_skills.clear()
-            self._aux_tasks.clear()
-            self._slack_action_handlers.clear()
-            self._context_engine = None
         # Fresh per round: _load_plugin records here when a gate-registering
         # plugin fails its own load. The force path treats such a failure as a
         # failed round even though _load_plugin itself swallowed the exception.
@@ -1437,9 +1881,15 @@ class PluginManager:
                 if force:
                     # Roll the whole round back to the exact pre-teardown state:
                     # provider objects, tracking, and every cleared discovery map.
-                    from agent.turn_gate import restore_turn_gate_providers
+                    from agent.turn_gate import (
+                        restore_turn_gate_host_configuration,
+                        restore_turn_gate_providers,
+                    )
 
                     restore_turn_gate_providers(_gate_registry_snapshot)
+                    restore_turn_gate_host_configuration(
+                        _gate_host_configuration_snapshot
+                    )
                     assert _host_registry_snapshot is not None
                     self._restore_force_reload_host_state(_host_registry_snapshot)
                     self._restore_discovery_state(_discovery_snapshot)
@@ -1476,6 +1926,7 @@ class PluginManager:
             "aux_tasks": dict(self._aux_tasks),
             "slack_action_handlers": list(self._slack_action_handlers),
             "context_engine": self._context_engine,
+            "owner_ledger": list(self._owner_ledger),
             "discovered": self._discovered,
         }
 
@@ -1505,6 +1956,7 @@ class PluginManager:
         self._aux_tasks.update(snapshot["aux_tasks"])
         self._slack_action_handlers[:] = snapshot["slack_action_handlers"]
         self._context_engine = snapshot["context_engine"]
+        self._owner_ledger[:] = snapshot["owner_ledger"]
         self._discovered = snapshot["discovered"]
 
     @staticmethod
@@ -2047,7 +2499,21 @@ class PluginManager:
         try:
             from gateway.platform_registry import platform_registry
 
+            deferred = getattr(platform_registry, "_deferred")
+            prior_present = platform_name in deferred
+            prior = deferred.get(platform_name)
             platform_registry.register_deferred(platform_name, _loader)
+            installed = deferred.get(platform_name)
+            if installed is _loader:
+                self._record_mapping_registration(
+                    owner_id=lookup_key,
+                    surface="deferred_platform",
+                    key=platform_name,
+                    mapping=deferred,
+                    installed=installed,
+                    prior_present=prior_present,
+                    prior=prior,
+                )
             logger.debug(
                 "Registered deferred platform loader: %s (plugin=%s)",
                 platform_name,
@@ -2075,6 +2541,7 @@ class PluginManager:
         from agent.turn_gate import snapshot_turn_gate_providers
 
         _plugin_id = manifest.key or manifest.name
+        _ledger_len_before = len(self._owner_ledger)
         _gate_ids_before = set(self._turn_gate_provider_ids)
         _gate_registry_before = snapshot_turn_gate_providers()
         _slug = _plugin_id.replace("/", "__").replace("-", "_")
@@ -2158,6 +2625,12 @@ class PluginManager:
 
         except Exception as exc:
             from agent.turn_gate import restore_turn_gate_providers
+
+            candidate_entries = self._owner_ledger[_ledger_len_before:]
+            try:
+                self._cleanup_owned_registrations(candidate_entries)
+            finally:
+                del self._owner_ledger[_ledger_len_before:]
 
             # Detect BEFORE rollback whether this plugin's register() touched
             # the mandatory turn-gate registry (registered/replaced a provider)
@@ -2290,6 +2763,11 @@ class PluginManager:
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
+                if hook_name == "pre_tool_call":
+                    logger.exception(
+                        "Pre-tool authorization hook callback failed closed"
+                    )
+                    raise
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
                     hook_name,
@@ -2634,11 +3112,18 @@ def resolve_pre_tool_block(
     times out is fail-closed to a block; ``block`` blocks with its message;
     anything else proceeds.
     """
-    details = _get_pre_tool_call_directive_details(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
+    try:
+        details = _get_pre_tool_call_directive_details(
+            tool_name, args, task_id=task_id, session_id=session_id,
+            tool_call_id=tool_call_id, turn_id=turn_id,
+            api_request_id=api_request_id, middleware_trace=middleware_trace,
+        )
+    except Exception:
+        logger.exception(
+            "Plugin pre-tool authorization resolver failed closed for %s",
+            tool_name,
+        )
+        return f"BLOCKED: plugin pre-tool authorization failed for {tool_name}"
     if details.action == "block":
         return details.message
     if details.action == "approve":

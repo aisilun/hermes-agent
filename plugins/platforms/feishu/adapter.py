@@ -52,12 +52,12 @@ import collections
 import concurrent.futures
 import hashlib
 import hmac
-import itertools
 import json
 import logging
 import mimetypes
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -345,7 +345,7 @@ def _build_exec_approval_card(
     *,
     command: str,
     description: str,
-    approval_id: int,
+    approval_id: str,
     allow_permanent: bool,
     allow_session: bool,
     smart_denied: bool,
@@ -1654,12 +1654,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
-        # Exec approval button state (approval_id → {session_key, message_id, chat_id})
-        self._approval_state: Dict[int, Dict[str, str]] = {}
-        self._approval_counter = itertools.count(1)
-        # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
-        self._update_prompt_state: Dict[int, Dict[str, str]] = {}
-        self._update_prompt_counter = itertools.count(1)
+        # Process-local opaque nonce → {session_key, message_id, chat_id, reserved?}.
+        self._approval_state: Dict[str, Dict[str, str]] = {}
+        self._update_prompt_state: Dict[str, Dict[str, str]] = {}
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -2176,7 +2173,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            approval_id = next(self._approval_counter)
+            approval_id = secrets.token_urlsafe(24)
             card = _build_exec_approval_card(
                 command=command,
                 description=description,
@@ -2208,7 +2205,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_update_prompt_card(*, prompt: str, default: str, prompt_id: int) -> Dict[str, Any]:
+    def _build_update_prompt_card(*, prompt: str, default: str, prompt_id: str) -> Dict[str, Any]:
         default_hint = f"\n\nDefault: `{default}`" if default else ""
 
         def _btn(label: str, answer: str, btn_type: str) -> dict:
@@ -2250,7 +2247,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            prompt_id = next(self._update_prompt_counter)
+            prompt_id = secrets.token_urlsafe(24)
             payload = json.dumps(
                 self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id),
                 ensure_ascii=False,
@@ -2308,6 +2305,34 @@ class FeishuAdapter(BasePlatformAdapter):
                 {"tag": "markdown", "content": f"Answered by **{user_name}**"},
             ],
         }
+
+    @staticmethod
+    def _build_rejected_interactive_card() -> Dict[str, Any]:
+        """Return one stable fail-closed card for stale or mismatched actions."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "❌ 操作已拒绝", "tag": "plain_text"},
+                "template": "red",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": "该卡片已失效、已处理或与当前消息不匹配，请使用最新卡片。",
+                },
+            ],
+        }
+
+    def _rejected_interactive_response(self) -> Any:
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_rejected_interactive_card()
+            response.card = card
+        return response
 
     @staticmethod
     def _write_update_prompt_response(answer: str) -> None:
@@ -2861,13 +2886,27 @@ class FeishuAdapter(BasePlatformAdapter):
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
         approval_id = action_value.get("approval_id")
-        if approval_id is None:
-            logger.debug("[Feishu] Card action missing approval_id, ignoring")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not isinstance(approval_id, str) or not approval_id:
+            logger.debug("[Feishu] Card action missing approval nonce, rejecting")
+            return self._rejected_interactive_response()
         state = self._approval_state.get(approval_id)
-        if not state:
+        if not state or state.get("reserved") == "1":
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return self._rejected_interactive_response()
+
+        callback_context = getattr(event, "context", None)
+        callback_chat_id = str(getattr(callback_context, "open_chat_id", "") or "")
+        callback_message_id = str(getattr(callback_context, "open_message_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        expected_message_id = str(state.get("message_id", "") or "")
+        if (
+            not callback_chat_id
+            or callback_chat_id != expected_chat_id
+            or not callback_message_id
+            or callback_message_id != expected_message_id
+        ):
+            logger.warning("[Feishu] Approval callback identity mismatch for %s", approval_id)
+            return self._rejected_interactive_response()
         choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
 
         operator = getattr(event, "operator", None)
@@ -2880,21 +2919,8 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Approval callback chat mismatch for %s (expected=%s, got=%s)",
-                approval_id,
-                expected_chat_id,
-                callback_chat_id,
-            )
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
         user_name = self._get_cached_sender_name(open_id) or open_id
-
-        chat_context = getattr(event, "context", None)
-        chat_id = str(getattr(chat_context, "open_chat_id", "") or "")
+        state["reserved"] = "1"
         if not self._submit_on_loop(
             loop,
             self._resolve_approval(
@@ -2902,10 +2928,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 choice=choice,
                 user_name=user_name,
                 open_id=open_id,
-                chat_id=chat_id,
+                chat_id=callback_chat_id,
+                message_id=callback_message_id,
             ),
         ):
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            state.pop("reserved", None)
+            return self._rejected_interactive_response()
 
         if P2CardActionTriggerResponse is None:
             return None
@@ -2920,13 +2948,27 @@ class FeishuAdapter(BasePlatformAdapter):
     def _handle_update_prompt_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule update prompt resolution and build the synchronous callback response."""
         prompt_id = action_value.get("update_prompt_id")
-        if prompt_id is None:
-            logger.debug("[Feishu] Card action missing update_prompt_id, ignoring")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not isinstance(prompt_id, str) or not prompt_id:
+            logger.debug("[Feishu] Card action missing update prompt nonce, rejecting")
+            return self._rejected_interactive_response()
         state = self._update_prompt_state.get(prompt_id)
-        if not state:
+        if not state or state.get("reserved") == "1":
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            return self._rejected_interactive_response()
+
+        callback_context = getattr(event, "context", None)
+        callback_chat_id = str(getattr(callback_context, "open_chat_id", "") or "")
+        callback_message_id = str(getattr(callback_context, "open_message_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        expected_message_id = str(state.get("message_id", "") or "")
+        if (
+            not callback_chat_id
+            or callback_chat_id != expected_chat_id
+            or not callback_message_id
+            or callback_message_id != expected_message_id
+        ):
+            logger.warning("[Feishu] Update prompt callback identity mismatch for %s", prompt_id)
+            return self._rejected_interactive_response()
 
         answer = str(action_value.get("hermes_update_prompt_action", "") or "").strip().lower()
         if answer not in {"y", "n"}:
@@ -2943,18 +2985,8 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
-            logger.warning(
-                "[Feishu] Update prompt callback chat mismatch for %s (expected=%s, got=%s)",
-                prompt_id,
-                expected_chat_id,
-                callback_chat_id,
-            )
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
         user_name = self._get_cached_sender_name(open_id) or open_id
+        state["reserved"] = "1"
         if not self._submit_on_loop(
             loop,
             self._resolve_update_prompt(
@@ -2963,9 +2995,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 user_name,
                 open_id=open_id,
                 chat_id=callback_chat_id,
+                message_id=callback_message_id,
             ),
         ):
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            state.pop("reserved", None)
+            return self._rejected_interactive_response()
 
         if P2CardActionTriggerResponse is None:
             return None
@@ -2979,12 +3013,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _resolve_approval(
         self,
-        approval_id: Any,
+        approval_id: str,
         choice: str,
         user_name: str,
         *,
         open_id: str = "",
         chat_id: str = "",
+        message_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
         state = self._approval_state.get(approval_id)
@@ -2993,13 +3028,21 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         if not self._is_interactive_operator_authorized(open_id):
             logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
+            state.pop("reserved", None)
             return
         expected_chat_id = str(state.get("chat_id", "") or "")
-        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+        expected_message_id = str(state.get("message_id", "") or "")
+        if (
+            not chat_id
+            or chat_id != expected_chat_id
+            or not message_id
+            or message_id != expected_message_id
+        ):
             logger.warning(
-                "[Feishu] Approval %s chat mismatch (expected=%s, got=%s)",
-                approval_id, expected_chat_id, chat_id,
+                "[Feishu] Approval %s callback identity mismatch",
+                approval_id,
             )
+            state.pop("reserved", None)
             return
         state = self._approval_state.pop(approval_id, None)
         if not state:
@@ -3033,12 +3076,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _resolve_update_prompt(
         self,
-        prompt_id: Any,
+        prompt_id: str,
         answer: str,
         user_name: str,
         *,
         open_id: str = "",
         chat_id: str = "",
+        message_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
         state = self._update_prompt_state.get(prompt_id)
@@ -3049,15 +3093,21 @@ class FeishuAdapter(BasePlatformAdapter):
             sender_id = SimpleNamespace(open_id=open_id, user_id="")
             if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
                 logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
+                state.pop("reserved", None)
                 return
         expected_chat_id = str(state.get("chat_id", "") or "")
-        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+        expected_message_id = str(state.get("message_id", "") or "")
+        if (
+            not chat_id
+            or chat_id != expected_chat_id
+            or not message_id
+            or message_id != expected_message_id
+        ):
             logger.warning(
-                "[Feishu] Update prompt %s chat mismatch (expected=%s, got=%s)",
+                "[Feishu] Update prompt %s callback identity mismatch",
                 prompt_id,
-                expected_chat_id,
-                chat_id,
             )
+            state.pop("reserved", None)
             return
         state = self._update_prompt_state.pop(prompt_id, None)
         if not state:

@@ -72,7 +72,7 @@ def _resolve_requests_verify() -> bool | str:
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
-    "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
+    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -84,7 +84,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
     "ollama",
-    "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
+    "stepfun", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
@@ -2367,12 +2367,19 @@ def get_model_context_length(
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
-    model = _strip_provider_prefix(model)
+    bare_model = _strip_provider_prefix(model)
+    prefixed_provider = (
+        model.split(":", 1)[0].strip().lower()
+        if bare_model != model
+        else ""
+    )
+    model = bare_model
 
     # Keep Codex OAuth provider-aware even when the credential broker rewrites
     # its endpoint to localhost; otherwise the custom-endpoint fallback returns
-    # the direct-API 1.05M window before the Codex 272K cap is consulted.
-    if (provider or "").strip().lower() == "openai-codex":
+    # the direct-API 1.05M window before the Codex 272K cap is consulted. The
+    # model prefix is also provider identity when callers omit the explicit arg.
+    if (provider or prefixed_provider).strip().lower() == "openai-codex":
         codex_ctx, codex_source = _resolve_codex_oauth_context_length_with_source(
             model, access_token=api_key or "",
         )

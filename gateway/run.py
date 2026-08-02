@@ -1341,6 +1341,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech",
     "text_to_speech_tool",
     "image_generate",
+    "bfl_flux3_get_result",
 }
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
@@ -1507,6 +1508,19 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     """
     paths: set = set()
     tool_name_by_call_id: Dict[str, str] = {}
+
+    def _add_text_media_paths(content: str) -> None:
+        for match in _TOOL_MEDIA_RE.finditer(content):
+            path = match.group(1).strip().rstrip('",}')
+            if path:
+                paths.add(path)
+        # The regex alone misses quoted and spaced paths that the delivery
+        # pipeline's extract_media grammar accepts — collect through the same
+        # extractor so the dedup set sees every path that could actually have
+        # been delivered.
+        media_files, _ = BasePlatformAdapter.extract_media(content)
+        paths.update(path for path, _is_voice in media_files)
+
     for msg in agent_history:
         if msg.get("role") == "assistant":
             for call in msg.get("tool_calls") or []:
@@ -1520,19 +1534,13 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if role == "assistant":
             content = str(msg.get("content", "") or "")
             if "MEDIA:" in content:
-                for match in _TOOL_MEDIA_RE.finditer(content):
-                    p = match.group(1).strip().rstrip('",}')
-                    if p:
-                        paths.add(p)
+                _add_text_media_paths(content)
             continue
         if role not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
         if "MEDIA:" in content:
-            for match in _TOOL_MEDIA_RE.finditer(content):
-                p = match.group(1).strip().rstrip('",}')
-                if p:
-                    paths.add(p)
+            _add_text_media_paths(content)
             continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
         if tool_name_by_call_id.get(cid) == "image_generate":
@@ -1908,6 +1916,7 @@ if _config_path.exists():
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
@@ -5074,7 +5083,16 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
-            result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+            from agent.turn_gate import canonical_nested_outer_turn
+
+            with canonical_nested_outer_turn(
+                "conversation",
+                task_id=ctx.session_id,
+            ):
+                result = agent.run_conversation(
+                    _api_run_message,
+                    **_conversation_kwargs,
+                )
         finally:
             unregister_gateway_notify(_approval_session_key)
             # Cancel any pending clarify entries so blocked agent
@@ -10600,6 +10618,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             
             # Set up message + fatal error handlers
+            adapter.set_turn_gate_scope_factory(self._canonical_gateway_turn_scope)
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
@@ -11701,6 +11720,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         del self._failed_platforms[platform]
                         continue
 
+                    adapter.set_turn_gate_scope_factory(
+                        self._canonical_gateway_turn_scope
+                    )
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
@@ -12641,6 +12663,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform: Platform,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
+        adapter.set_turn_gate_scope_factory(self._canonical_gateway_turn_scope)
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)
@@ -18232,11 +18255,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             (voice_mode == "all")
             or (voice_mode == "voice_only" and is_voice_input)
             # ``voice.auto_tts`` is synced into the adapter on gateway startup.
-            # Treat it as "voice accompanies text replies" unless a chat was
-            # explicitly turned off. The base adapter's own auto-TTS path only
-            # covers voice-input replies, so final text replies need the runner
-            # path here.
-            or (voice_mode != "off" and adapter_auto_tts)
+            # It is the fallback only when the chat has no explicit mode;
+            # otherwise the chat-level all/voice_only/off choice takes precedence.
+            or (voice_mode is None and adapter_auto_tts)
         )
         if not should:
             logger.debug(
@@ -18476,35 +18497,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         resolve from that profile's secret scope. Mirrors the pattern in
         ``_run_agent``.
         """
-        from agent.turn_gate import (
-            TurnGateRequest,
-            acquire_outer_turn,
-            build_runtime_identity,
-        )
+        async def _run_gated() -> None:
+            from agent.turn_gate import (
+                TurnGateRequest,
+                acquire_outer_turn,
+                build_runtime_identity,
+            )
 
-        turn_id = f"{task_id}:{uuid.uuid4().hex[:8]}"
-        identity = build_runtime_identity(
-            surface="gateway-background",
-            session_scope=task_id,
-            turn_id=turn_id,
-        )
-        request = TurnGateRequest(
-            entrypoint="gateway-background",
-            purpose="business",
-            task_id=task_id,
-            identity=identity,
-        )
-        with acquire_outer_turn(request):
-            if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            turn_id = f"{task_id}:{uuid.uuid4().hex[:8]}"
+            identity = build_runtime_identity(
+                surface="gateway-background",
+                session_scope=task_id,
+                turn_id=turn_id,
+            )
+            request = TurnGateRequest(
+                entrypoint="gateway-background",
+                purpose="business",
+                task_id=task_id,
+                identity=identity,
+            )
+            with acquire_outer_turn(request):
                 return await self._run_background_task_inner(
                     prompt, source, task_id, event_message_id, media_urls, media_types,
                 )
 
-            profile_home = self._resolve_profile_home_for_source(source)
-            with _profile_runtime_scope(profile_home):
-                return await self._run_background_task_inner(
-                    prompt, source, task_id, event_message_id, media_urls, media_types,
-                )
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await _run_gated()
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            # Runtime identity and gate acquisition must observe the routed
+            # profile's HERMES_HOME and secret scope, not the process default.
+            return await _run_gated()
 
     async def _run_background_task_inner(
         self,
@@ -23037,6 +23061,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=message_type,
             )
 
+    @_contextmanager
+    def _canonical_gateway_turn_scope(
+        self,
+        event: Any,
+        session_scope: str,
+        turn_id: str,
+    ):
+        """Create one routed-profile request covering typing, tools, and delivery."""
+        from contextlib import nullcontext
+
+        from agent.turn_gate import (
+            TurnGateRequest,
+            acquire_outer_turn,
+            build_runtime_identity,
+        )
+
+        source = event.source
+        profile_scope = nullcontext()
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_scope = _profile_runtime_scope(
+                self._resolve_profile_home_for_source(source)
+            )
+        with profile_scope:
+            platform = getattr(source, "platform", None)
+            surface = getattr(platform, "value", None) or str(platform or "gateway")
+            identity = build_runtime_identity(
+                surface=surface,
+                session_scope=session_scope,
+                turn_id=turn_id,
+            )
+            request = TurnGateRequest(
+                entrypoint="gateway",
+                purpose="business",
+                task_id=session_scope,
+                identity=identity,
+            )
+            with acquire_outer_turn(request):
+                yield request
+
     async def _run_agent_inner(
         self,
         message: str,
@@ -23059,21 +23122,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             TurnGateRequest,
             acquire_outer_turn,
             build_runtime_identity,
+            current_turn_gate_request,
             enforce_output_allowed,
         )
 
-        turn_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
-        identity = build_runtime_identity(
-            surface="gateway",
-            session_scope=session_id,
-            turn_id=turn_id,
-        )
-        request = TurnGateRequest(
-            entrypoint="gateway",
-            purpose="business",
-            task_id=session_id,
-            identity=identity,
-        )
+        request = current_turn_gate_request()
+        if request is None:
+            turn_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
+            identity = build_runtime_identity(
+                surface="gateway",
+                session_scope=session_id,
+                turn_id=turn_id,
+            )
+            request = TurnGateRequest(
+                entrypoint="gateway",
+                purpose="business",
+                task_id=session_id,
+                identity=identity,
+            )
         with acquire_outer_turn(request):
             result = await self._run_agent_inner_unleased(
                 message, context_prompt, history, source, session_id,

@@ -2817,6 +2817,185 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+# P0 containment for credential-bearing profiles.  The shared Kanban board is
+# a coordination surface, not an authorization boundary: a worker that can
+# write a row must not thereby acquire the assignee profile's credentials.
+# Keep this deliberately code-owned (not an agent-editable config flag) until
+# the provenance/grant broker can replace it with cryptographically bound
+# authorization.
+PRIVILEGED_KANBAN_PROFILES = frozenset({"default"})
+NON_DISPATCHABLE_PRIVILEGED_PROFILES = PRIVILEGED_KANBAN_PROFILES
+_PRIVILEGED_DELEGATION_POLICY = "privileged_profile_auto_dispatch_disabled"
+
+
+class PrivilegedDelegationError(ValueError):
+    """Raised when shared-board automation targets a privileged profile."""
+
+
+def _is_shared_kanban_connection(conn: sqlite3.Connection) -> bool:
+    """Return False only for genuinely isolated in-memory test/workflow DBs."""
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return True
+    for row in rows:
+        name = row[1] if not isinstance(row, sqlite3.Row) else row["name"]
+        path = row[2] if not isinstance(row, sqlite3.Row) else row["file"]
+        if name == "main":
+            return bool(str(path or "").strip())
+    return True
+
+
+def _privileged_delegation_denied(
+    assignee: Optional[str],
+    created_by: Optional[str],
+) -> bool:
+    """Return True when shared-board automation targets a privileged profile.
+
+    ``created_by`` is intentionally ignored: it is spoofable audit metadata,
+    not an authorization principal or a single-use execution grant.
+    """
+    del created_by
+    target = _canonical_assignee(assignee)
+    return target in NON_DISPATCHABLE_PRIVILEGED_PROFILES
+
+
+def _privileged_delegation_reason(
+    assignee: Optional[str],
+    created_by: Optional[str],
+) -> str:
+    del created_by
+    target = _canonical_assignee(assignee)
+    return (
+        f"{_PRIVILEGED_DELEGATION_POLICY}: target={target!r} is not "
+        "eligible for shared Kanban automatic execution"
+    )
+
+
+def _assert_privileged_delegation_allowed(
+    assignee: Optional[str],
+    created_by: Optional[str],
+) -> None:
+    if _privileged_delegation_denied(assignee, created_by):
+        raise PrivilegedDelegationError(
+            _privileged_delegation_reason(assignee, created_by)
+        )
+
+
+def _assert_privileged_reassignment_allowed(
+    current_assignee: Optional[str],
+    target_assignee: Optional[str],
+    created_by: Optional[str],
+) -> None:
+    """Deny every transition into a privileged profile.
+
+    ``assign_task`` has no authenticated caller principal.  Original task
+    provenance therefore cannot authorize a later return from an untrusted
+    worker to ``default``; the trusted profile must create a new direct task.
+    """
+    current = _canonical_assignee(current_assignee)
+    target = _canonical_assignee(target_assignee)
+    if current == target:
+        return
+    if target in PRIVILEGED_KANBAN_PROFILES:
+        raise PrivilegedDelegationError(
+            f"{_PRIVILEGED_DELEGATION_POLICY}: transitions into "
+            f"target={target!r} are not dispatchable"
+        )
+    _assert_privileged_delegation_allowed(target, created_by)
+
+
+def _block_privileged_delegation_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_status: str,
+    source: str,
+    target_assignee: Optional[str] = None,
+    board: Optional[str] = None,
+    force_privileged_target: bool = False,
+) -> bool:
+    """CAS-block a non-dispatchable shared-board row before claim/spawn."""
+    if not _is_shared_kanban_connection(conn):
+        return False
+    blocked_task: Optional[Task] = None
+    reason: Optional[str] = None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, created_by, claim_lock, block_recurrences "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        policy_assignee = (
+            target_assignee if target_assignee is not None else row["assignee"]
+        )
+        target_is_privileged = (
+            _canonical_assignee(policy_assignee) in PRIVILEGED_KANBAN_PROFILES
+        )
+        if (
+            row["status"] != expected_status
+            or row["claim_lock"] is not None
+            or not (
+                _privileged_delegation_denied(
+                    policy_assignee, row["created_by"]
+                )
+                or (force_privileged_target and target_is_privileged)
+            )
+        ):
+            return False
+
+        if force_privileged_target and target_is_privileged:
+            reason = (
+                f"{_PRIVILEGED_DELEGATION_POLICY}: automatic assignment to "
+                f"target={_canonical_assignee(policy_assignee)!r} is disabled"
+            )
+        else:
+            reason = _privileged_delegation_reason(
+                policy_assignee, row["created_by"]
+            )
+        recurrences = max(int(row["block_recurrences"] or 0), 1)
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'blocked',
+                   claim_lock = NULL,
+                   claim_expires = NULL,
+                   worker_pid = NULL,
+                   block_kind = 'capability',
+                   block_recurrences = ?
+             WHERE id = ? AND status = ? AND claim_lock IS NULL
+            """,
+            (recurrences, task_id, expected_status),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {
+                "reason": reason,
+                "kind": "capability",
+                "recurrences": recurrences,
+                "source": source,
+                "policy": _PRIVILEGED_DELEGATION_POLICY,
+            },
+        )
+        blocked_task = get_task(conn, task_id)
+
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_blocked",
+        task_id,
+        board=board or get_current_board(),
+        assignee=blocked_task.assignee if blocked_task else None,
+        run_id=None,
+        reason=reason,
+    )
+    return True
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2890,6 +3069,14 @@ def create_task(
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
         )
+    shared_board = _is_shared_kanban_connection(conn)
+    if shared_board and assignee in NON_DISPATCHABLE_PRIVILEGED_PROFILES:
+        if initial_status != "blocked":
+            raise PrivilegedDelegationError(
+                _privileged_delegation_reason(assignee, created_by)
+            )
+    elif shared_board:
+        _assert_privileged_delegation_allowed(assignee, created_by)
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -3348,10 +3535,16 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, created_by "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if not row:
             return False
+        if _is_shared_kanban_connection(conn):
+            _assert_privileged_reassignment_allowed(
+                row["assignee"], profile, row["created_by"]
+            )
         if row["claim_lock"] is not None and row["status"] == "running":
             raise RuntimeError(
                 f"cannot reassign {task_id}: currently running (claimed). "
@@ -4037,12 +4230,18 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, assignee, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if (
+                _is_shared_kanban_connection(conn)
+                and _canonical_assignee(row["assignee"])
+                in NON_DISPATCHABLE_PRIVILEGED_PROFILES
+            ):
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -4104,6 +4303,13 @@ def claim_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
+    if _block_privileged_delegation_task(
+        conn,
+        task_id,
+        expected_status="ready",
+        source="claim_task",
+    ):
+        return None
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -4163,8 +4369,9 @@ def claim_task(
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               AND (? = 0 OR lower(trim(COALESCE(assignee, ''))) != 'default')
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, now, task_id, int(_is_shared_kanban_connection(conn))),
         )
         if cur.rowcount != 1:
             return None
@@ -4233,6 +4440,13 @@ def claim_review_task(
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
     """
+    if _block_privileged_delegation_task(
+        conn,
+        task_id,
+        expected_status="review",
+        source="claim_review_task",
+    ):
+        return None
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -4247,8 +4461,9 @@ def claim_review_task(
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
+               AND (? = 0 OR lower(trim(COALESCE(assignee, ''))) != 'default')
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, now, task_id, int(_is_shared_kanban_connection(conn))),
         )
         if cur.rowcount != 1:
             return None
@@ -5763,12 +5978,27 @@ def promote_task(
     promotion would succeed without mutating state.
     """
     row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        "SELECT status, assignee, created_by FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
     if row is None:
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
+    if (
+        _is_shared_kanban_connection(conn)
+        and _canonical_assignee(row["assignee"])
+        in NON_DISPATCHABLE_PRIVILEGED_PROFILES
+    ):
+        reason = _privileged_delegation_reason(row["assignee"], row["created_by"])
+        if not dry_run and cur_status in {"todo", "blocked"}:
+            _block_privileged_delegation_task(
+                conn,
+                task_id,
+                expected_status=cur_status,
+                source="promote_task",
+                force_privileged_target=True,
+            )
+        return False, reason
     if cur_status not in ("todo", "blocked"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
@@ -5824,6 +6054,22 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     state) holds for the rest of this function's lifetime.
     """
     now = int(time.time())
+    task = get_task(conn, task_id)
+    if (
+        task is not None
+        and _is_shared_kanban_connection(conn)
+        and task.status in {"blocked", "scheduled"}
+        and _canonical_assignee(task.assignee)
+        in NON_DISPATCHABLE_PRIVILEGED_PROFILES
+    ):
+        _block_privileged_delegation_task(
+            conn,
+            task_id,
+            expected_status=task.status,
+            source="unblock_task",
+            force_privileged_target=True,
+        )
+        return False
     with write_txn(conn):
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
@@ -8090,10 +8336,18 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     the warning still fires in degraded environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT assignee, created_by FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
+    if _is_shared_kanban_connection(conn):
+        rows = [
+            row
+            for row in rows
+            if not _privileged_delegation_denied(
+                row["assignee"], row["created_by"]
+            )
+        ]
     if not rows:
         return False
     try:
@@ -8116,10 +8370,18 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     should have spawned a review agent.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT assignee, created_by FROM tasks "
         "WHERE status = 'review' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
+    if _is_shared_kanban_connection(conn):
+        rows = [
+            row
+            for row in rows
+            if not _privileged_delegation_denied(
+                row["assignee"], row["created_by"]
+            )
+        ]
     if not rows:
         return False
     try:
@@ -8249,6 +8511,7 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    _shared_board = _is_shared_kanban_connection(conn)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -8289,7 +8552,7 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, created_by FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -8360,6 +8623,23 @@ def _dispatch_once_locked(
             # by ``kanban.default_assignee``, not "unassigned but secretly
             # routed".
             if _default_assignee and _default_assignee_resolved:
+                if (
+                    _shared_board
+                    and _canonical_assignee(_default_assignee)
+                    in PRIVILEGED_KANBAN_PROFILES
+                ):
+                    if not dry_run:
+                        _block_privileged_delegation_task(
+                            conn,
+                            row["id"],
+                            expected_status="ready",
+                            source="kanban.default_assignee",
+                            target_assignee=_default_assignee,
+                            board=board,
+                            force_privileged_target=True,
+                        )
+                    result.auto_blocked.append(row["id"])
+                    continue
                 # Dry-run: show what WOULD happen (auto-assign + spawn) without
                 # mutating the DB. Real run: mutate the row + emit the
                 # 'assigned' event so the board state matches what just happened.
@@ -8391,6 +8671,19 @@ def _dispatch_once_locked(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
+        if _shared_board and _privileged_delegation_denied(
+            row_assignee, row["created_by"]
+        ):
+            if not dry_run:
+                _block_privileged_delegation_task(
+                    conn,
+                    row["id"],
+                    expected_status="ready",
+                    source="dispatch_ready",
+                    board=board,
+                )
+            result.auto_blocked.append(row["id"])
+            continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -8531,7 +8824,7 @@ def _dispatch_once_locked(
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
     review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, created_by FROM tasks "
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -8540,6 +8833,19 @@ def _dispatch_once_locked(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        if _shared_board and _privileged_delegation_denied(
+            row["assignee"], row["created_by"]
+        ):
+            if not dry_run:
+                _block_privileged_delegation_task(
+                    conn,
+                    row["id"],
+                    expected_status="review",
+                    source="dispatch_review",
+                    board=board,
+                )
+            result.auto_blocked.append(row["id"])
             continue
         try:
             from hermes_cli.profiles import profile_exists
@@ -8887,6 +9193,7 @@ def _default_spawn(
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+    _assert_privileged_delegation_allowed(task.assignee, task.created_by)
 
     from hermes_cli.profiles import normalize_profile_name
 

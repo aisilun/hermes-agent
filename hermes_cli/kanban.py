@@ -354,8 +354,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
                                "the dispatcher SIGTERMs (then SIGKILLs) the worker "
                                "and re-queues the task.")
-    p_create.add_argument("--created-by", default="user",
-                          help="Author name recorded on the task (default: user)")
+    p_create.add_argument(
+        "--created-by",
+        default=None,
+        help="Audit author name recorded on the task (default: active profile). "
+             "This value is not an authorization principal.",
+    )
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
                           help="Skill to force-load into the worker "
                                "(repeatable). The kanban lifecycle is already "
@@ -1113,6 +1117,14 @@ def _profile_author() -> str:
         return "user"
 
 
+def _resolve_cli_created_by(
+    requested: Optional[str],
+) -> str:
+    """Resolve audit provenance; never treat it as an authorization principal."""
+    requested_author = (requested or "").strip()
+    return requested_author or _profile_author()
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init",
     "create",
@@ -1495,13 +1507,20 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    try:
+        created_by = _resolve_cli_created_by(
+            getattr(args, "created_by", None),
+        )
+    except ValueError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
             title=args.title,
             body=args.body,
             assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
+            created_by=created_by,
             workspace_kind=ws_kind,
             workspace_path=ws_path,
             branch_name=branch_name,
@@ -1549,6 +1568,13 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     if not workers:
         print("kanban swarm: at least one --worker is required", file=sys.stderr)
         return 2
+    try:
+        created_by = _resolve_cli_created_by(
+            getattr(args, "created_by", None),
+        )
+    except ValueError as exc:
+        print(f"kanban swarm: {exc}", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
         created = ks.create_swarm(
             conn,
@@ -1557,7 +1583,7 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             verifier_assignee=args.verifier,
             synthesizer_assignee=args.synthesizer,
             tenant=args.tenant,
-            created_by=args.created_by or _profile_author(),
+            created_by=created_by,
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
         )

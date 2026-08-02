@@ -270,11 +270,13 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    platform_mutation,
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
 )
 from utils import env_int
+from agent.turn_gate import create_detached_task
 
 
 def _is_allowed_bridge_path(url: str) -> bool:
@@ -850,6 +852,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._close_bridge_log()
         print(f"[{self.name}] Disconnected")
     
+    @platform_mutation
     async def send(
         self,
         chat_id: str,
@@ -919,6 +922,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    @platform_mutation
     async def edit_message(
         self,
         chat_id: str,
@@ -952,6 +956,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    @platform_mutation
     async def _send_media_to_bridge(
         self,
         chat_id: str,
@@ -1001,6 +1006,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    @platform_mutation
     async def send_poll(
         self,
         chat_id: str,
@@ -1087,6 +1093,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             metadata=metadata,
         )
 
+    @platform_mutation
     async def send_location(
         self,
         chat_id: str,
@@ -1202,6 +1209,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             file_name or os.path.basename(file_path),
         )
 
+    @platform_mutation
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator via bridge."""
         if not self._running or not self._http_session:
@@ -1274,7 +1282,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # Fire-and-forget: a slow bridge /read must not
                                 # delay message dispatch (matches BlueBubbles
                                 # asyncio.create_task pattern for mark_read).
-                                asyncio.create_task(self._send_read_receipt(msg_data))
+                                self._schedule_read_receipt(msg_data)
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
@@ -1291,6 +1299,27 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             await asyncio.sleep(1)  # Poll interval
 
+    def _schedule_read_receipt(self, data: Dict[str, Any]) -> asyncio.Task[Any]:
+        """Detach automatic receipt output and acquire a fresh independent lease."""
+
+        async def _run() -> None:
+            try:
+                await self._run_fresh_platform_mutation(
+                    "whatsapp-read-receipt",
+                    lambda: self._send_read_receipt(data),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "[%s] WhatsApp read receipt blocked or failed: %s",
+                    self.name,
+                    exc,
+                )
+
+        return create_detached_task(_run(), name="whatsapp-read-receipt")
+
+    @platform_mutation
     async def _send_read_receipt(self, data: Dict[str, Any]) -> None:
         """Mark a policy-accepted inbound message as read via the bridge."""
         if not self._send_read_receipts or not self._http_session:
@@ -1619,6 +1648,7 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document"
 
 
+@platform_mutation
 async def _standalone_send(
     pconfig,
     chat_id,

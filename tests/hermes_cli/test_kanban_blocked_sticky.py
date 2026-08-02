@@ -168,6 +168,7 @@ def test_initial_status_blocked_is_sticky_and_emits_block_event(
             conn,
             title="awaiting authorization",
             assignee="default",
+            created_by="default",
             initial_status="blocked",
         )
 

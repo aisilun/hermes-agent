@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+import agent.turn_gate as turn_gate
 from agent.turn_gate import (
     GateDecision,
     GateState,
@@ -226,6 +227,134 @@ def test_outer_turn_reuses_one_lease_and_releases_once() -> None:
     assert provider.validate_calls == ["tool:terminal", "output"]
 
 
+def test_initial_idempotent_disabled_config_load_does_not_drift_outer_turn() -> None:
+    request = _request()
+
+    with acquire_outer_turn(request):
+        configure_turn_gate_from_config({})
+        enforce_output_allowed()
+
+
+def test_gateway_bridge_reuses_canonical_request_for_nested_conversation() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(_request(), entrypoint="gateway")
+
+    with acquire_outer_turn(outer) as decision:
+        with turn_gate.canonical_nested_outer_turn("conversation"):
+            nested_identity = build_runtime_identity(
+                surface="conversation",
+                session_scope=outer.task_id or "task",
+                turn_id="nested-turn",
+            )
+            nested = TurnGateRequest(
+                entrypoint="conversation",
+                purpose="business",
+                task_id=outer.task_id,
+                identity=nested_identity,
+            )
+            with acquire_outer_turn(nested) as nested_decision:
+                assert nested_decision is decision
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+def test_gateway_bridge_allows_explicit_host_bound_nested_task_scope() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(
+        _request(),
+        entrypoint="gateway",
+        task_id="opaque-gateway-turn-scope",
+    )
+
+    with acquire_outer_turn(outer) as decision:
+        with turn_gate.canonical_nested_outer_turn(
+            "conversation",
+            task_id="conversation-session-id",
+        ):
+            nested_identity = build_runtime_identity(
+                surface="conversation",
+                session_scope="conversation-session-id",
+                turn_id="nested-turn",
+            )
+            nested = TurnGateRequest(
+                entrypoint="conversation",
+                purpose=outer.purpose,
+                task_id="conversation-session-id",
+                identity=nested_identity,
+            )
+            with acquire_outer_turn(nested) as nested_decision:
+                assert nested_decision is decision
+                assert nested_identity is outer.identity
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+def test_gateway_bridge_rejects_unbound_nested_task_scope() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(
+        _request(),
+        entrypoint="gateway",
+        task_id="opaque-gateway-turn-scope",
+    )
+
+    with acquire_outer_turn(outer):
+        with turn_gate.canonical_nested_outer_turn(
+            "conversation",
+            task_id="authorized-conversation-session",
+        ):
+            forged = replace(
+                outer,
+                entrypoint="conversation",
+                task_id="forged-conversation-session",
+            )
+            with pytest.raises(
+                TurnGateBlocked,
+                match="canonical outer-turn request mismatch",
+            ):
+                with acquire_outer_turn(forged):
+                    pytest.fail("unbound nested task scope must not run")
+        with pytest.raises(TurnGateBlocked, match="poisoned"):
+            enforce_output_allowed()
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+def test_gateway_bridge_does_not_authorize_nested_identity_change() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(_request(), entrypoint="gateway")
+    assert outer.identity is not None
+
+    with acquire_outer_turn(outer):
+        with turn_gate.canonical_nested_outer_turn("conversation"):
+            nested = replace(
+                outer,
+                entrypoint="conversation",
+                identity=replace(outer.identity, turn_id="forged-nested-turn"),
+            )
+            with pytest.raises(
+                TurnGateBlocked,
+                match="canonical outer-turn request mismatch",
+            ):
+                with acquire_outer_turn(nested):
+                    pytest.fail("changed nested identity must not run")
+        with pytest.raises(TurnGateBlocked, match="poisoned"):
+            enforce_output_allowed()
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
 def test_tool_observation_is_policy_neutral_and_forwarded_to_provider() -> None:
     class ObservingProvider(FakeProvider):
         def __init__(self, decision: GateDecision) -> None:
@@ -362,6 +491,38 @@ async def test_detached_task_does_not_inherit_outer_turn_context() -> None:
     assert result is None
 
 
+def test_detached_outer_turn_context_acquires_fresh_child_and_restores_parent() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    parent = replace(_request(), entrypoint="gateway", task_id="parent-task")
+    child = replace(
+        _request(),
+        entrypoint="conversation",
+        task_id="child-task",
+        identity=replace(
+            _identity(),
+            surface="conversation",
+            session_instance_id="child-session",
+            turn_id="child-turn",
+        ),
+    )
+
+    with acquire_outer_turn(parent):
+        assert turn_gate.current_turn_gate_request() is parent
+        with turn_gate.detached_outer_turn_context():
+            assert turn_gate.current_turn_gate_request() is None
+            assert current_turn_gate_decision() is None
+            with acquire_outer_turn(child):
+                assert turn_gate.current_turn_gate_request() is child
+                enforce_output_allowed()
+        assert turn_gate.current_turn_gate_request() is parent
+        enforce_output_allowed()
+
+    assert provider.acquire_calls == 2
+    assert provider.release_calls == 2
+
+
 def test_malformed_config_latches_fail_closed_until_valid_reload() -> None:
     with pytest.raises(TurnGateBlocked, match="required_provider"):
         configure_turn_gate_from_config(
@@ -409,3 +570,162 @@ def test_host_identity_builder_uses_configured_machine_and_opaque_session() -> N
     assert first.gateway_instance_id == second.gateway_instance_id
     assert first.turn_id == "turn-a"
     assert second.turn_id == "turn-b"
+
+
+@pytest.mark.parametrize(
+    ("identity_field", "replacement"),
+    [
+        ("machine_id", "machine-2"),
+        ("profile", "protected-profile"),
+        ("surface", "other-surface"),
+        ("session_instance_id", "session-instance-2"),
+        ("gateway_instance_id", "gateway-instance-2"),
+        ("turn_id", "turn-2"),
+    ],
+)
+def test_nested_outer_turn_identity_mismatch_poisoned_before_any_checkpoint(
+    identity_field: str,
+    replacement: str,
+) -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = _request()
+    assert outer.identity is not None
+    nested = replace(
+        outer,
+        identity=replace(outer.identity, **{identity_field: replacement}),
+    )
+
+    with acquire_outer_turn(outer):
+        with pytest.raises(TurnGateBlocked, match="canonical outer-turn request mismatch"):
+            with acquire_outer_turn(nested):
+                pytest.fail("mismatched nested body must not run")
+        with pytest.raises(TurnGateBlocked, match="poisoned"):
+            enforce_output_allowed()
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [
+        replace(_request(), task_id="task-2"),
+        replace(_request(), entrypoint="other-entrypoint"),
+        replace(_request(), purpose="reload"),
+    ],
+)
+def test_nested_outer_turn_binding_mismatch_is_fail_closed(
+    nested: TurnGateRequest,
+) -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+
+    with acquire_outer_turn(_request()):
+        with pytest.raises(TurnGateBlocked, match="canonical outer-turn request mismatch"):
+            with acquire_outer_turn(nested):
+                pytest.fail("mismatched nested body must not run")
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+def _configure_provider(
+    provider_id: str,
+    *,
+    machine_id: str = "machine-1",
+    allowed_child_environment: list[str] | None = None,
+) -> None:
+    gate: dict[str, object] = {
+        "required_provider": provider_id,
+        "runtime_identity": {"machine_id": machine_id},
+    }
+    if allowed_child_environment is not None:
+        gate["allowed_child_environment"] = allowed_child_environment
+    configure_turn_gate_from_config({"agent": {"turn_gate": gate}})
+
+
+def test_required_provider_switch_poisoned_before_tool_and_never_reacquires() -> None:
+    provider_a = FakeProvider(_decision())
+    provider_b = FakeProvider(
+        replace(
+            _decision(state=GateState.CLOSED_DRAINING),
+            provider_id="replacement-gate",
+            lease_id="lease-b",
+        )
+    )
+    _register(provider_a)
+    register_turn_gate_provider(
+        "replacement-gate",
+        provider_b,
+        owner_id="replacement-gate",
+    )
+    _configure_provider("example-gate")
+
+    with acquire_outer_turn(_request()):
+        _configure_provider("replacement-gate")
+        with pytest.raises(TurnGateBlocked, match="host configuration changed"):
+            enforce_tool_allowed("terminal")
+        with pytest.raises(TurnGateBlocked, match="poisoned"):
+            enforce_output_allowed()
+
+    assert provider_a.acquire_calls == 1
+    assert provider_a.release_calls == 1
+    assert provider_b.acquire_calls == 0
+    assert provider_b.release_calls == 0
+
+
+@pytest.mark.parametrize(
+    "changed_config",
+    [
+        {"machine_id": "machine-2", "allowed_child_environment": []},
+        {"machine_id": "machine-1", "allowed_child_environment": ["LEASE_ID"]},
+    ],
+)
+def test_same_provider_host_semantic_change_poisoned_before_output(
+    changed_config: dict[str, object],
+) -> None:
+    _configure_provider(
+        "example-gate",
+        machine_id="machine-1",
+        allowed_child_environment=[],
+    )
+    provider = FakeProvider(_decision())
+    _register(provider)
+
+    with acquire_outer_turn(_request()):
+        _configure_provider(
+            "example-gate",
+            machine_id=str(changed_config["machine_id"]),
+            allowed_child_environment=list(
+                changed_config["allowed_child_environment"]  # type: ignore[arg-type]
+            ),
+        )
+        with pytest.raises(TurnGateBlocked, match="host configuration changed"):
+            enforce_output_allowed()
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+def test_semantically_identical_configuration_reload_keeps_active_turn_valid() -> None:
+    _configure_provider(
+        "example-gate",
+        machine_id="machine-1",
+        allowed_child_environment=["LEASE_ID"],
+    )
+    provider = FakeProvider(_decision())
+    _register(provider)
+
+    with acquire_outer_turn(_request()):
+        _configure_provider(
+            "example-gate",
+            machine_id="machine-1",
+            allowed_child_environment=["LEASE_ID"],
+        )
+        enforce_output_allowed()
+
+    assert provider.validate_calls == ["output"]
+    assert provider.release_calls == 1

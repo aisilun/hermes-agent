@@ -339,6 +339,28 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
+    def test_provider_prefixed_model_applies_codex_cap_before_custom_endpoint(self):
+        """A ``openai-codex:`` model prefix is provider identity, even without an explicit arg."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch(
+            "agent.model_metadata._resolve_codex_oauth_context_length_with_source",
+            return_value=(272_000, "fallback"),
+        ) as resolve_codex, patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=1_050_000,
+        ):
+            ctx = get_model_context_length(
+                model="openai-codex:gpt-5.5",
+                base_url="http://127.0.0.1:65534/v1",
+                api_key="oauth-token",
+            )
+
+        assert ctx == 272_000
+        resolve_codex.assert_called_once_with(
+            "gpt-5.5", access_token="oauth-token"
+        )
+
 
     @pytest.mark.parametrize(
         "stale_context,live_context",

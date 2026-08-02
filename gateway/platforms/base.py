@@ -550,7 +550,18 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    ContextManager,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -2632,6 +2643,76 @@ def _strip_media_directives(text: str) -> str:
     return _strip_media_tag_directives(text)
 
 
+_PLATFORM_MUTATION_INVENTORY: Dict[str, Dict[str, Any]] = {}
+_PLATFORM_MUTATION_EXEMPTIONS: Dict[str, Dict[str, str]] = {
+    "BasePlatformAdapter.connect": {
+        "kind": "platform_mutation_exemption",
+        "reason": (
+            "Protocol connection/authentication lifecycle runs outside a business "
+            "turn; no user-visible business mutation may be added here."
+        ),
+    },
+    "BasePlatformAdapter.disconnect": {
+        "kind": "platform_mutation_exemption",
+        "reason": (
+            "Protocol shutdown only releases transport resources and must remain "
+            "available when the business turn gate is closed."
+        ),
+    },
+}
+
+
+def _platform_mutation_key(function: Callable[..., Any]) -> str:
+    return f"{function.__module__}.{function.__qualname__}"
+
+
+def _wrap_platform_mutation(
+    function: Callable[..., Any],
+    *,
+    declaration: str,
+) -> Callable[..., Any]:
+    """Wrap one declared platform write immediately before its side effect."""
+    if getattr(function, "_hermes_output_gate_wrapped", False):
+        wrapped = function
+    elif inspect.iscoroutinefunction(function):
+        @functools.wraps(function)
+        async def guarded_async_platform_mutation(*args: Any, **kwargs: Any):
+            enforce_output_allowed()
+            return await function(*args, **kwargs)
+
+        wrapped = guarded_async_platform_mutation
+    else:
+        @functools.wraps(function)
+        def guarded_sync_platform_mutation(*args: Any, **kwargs: Any):
+            enforce_output_allowed()
+            return function(*args, **kwargs)
+
+        wrapped = guarded_sync_platform_mutation
+
+    setattr(wrapped, "_hermes_output_gate_wrapped", True)
+    setattr(wrapped, "_hermes_platform_mutation_declaration", declaration)
+    _PLATFORM_MUTATION_INVENTORY[_platform_mutation_key(function)] = {
+        "kind": "platform_mutation",
+        "declaration": declaration,
+    }
+    return wrapped
+
+
+def platform_mutation(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Explicitly declare and gate a real platform/client mutation write site."""
+    return _wrap_platform_mutation(function, declaration="explicit")
+
+
+def get_platform_mutation_inventory() -> Dict[str, Dict[str, Any]]:
+    """Return a machine-readable snapshot of all loaded mutation declarations."""
+    return {key: dict(value) for key, value in _PLATFORM_MUTATION_INVENTORY.items()}
+
+
+def get_platform_mutation_exemptions() -> Dict[str, Dict[str, str]]:
+    """Return explicit transport-lifecycle exemptions and their reasons."""
+    return {key: dict(value) for key, value in _PLATFORM_MUTATION_EXEMPTIONS.items()}
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
@@ -2740,38 +2821,29 @@ class BasePlatformAdapter(ABC):
                 or method_name.startswith(cls._GATE_GUARDED_OUTPUT_PREFIXES)
             ):
                 continue
-            if getattr(implementation, "_hermes_output_gate_wrapped", False):
-                continue
             if not callable(implementation):
                 continue
-
-            if inspect.iscoroutinefunction(implementation):
-                @functools.wraps(implementation)
-                async def guarded_async_output_method(
-                    self,
-                    *args: Any,
-                    __implementation=implementation,
-                    **method_kwargs: Any,
-                ):
-                    enforce_output_allowed()
-                    return await __implementation(self, *args, **method_kwargs)
-
-                guarded_output_method = guarded_async_output_method
-            else:
-                @functools.wraps(implementation)
-                def guarded_sync_output_method(
-                    self,
-                    *args: Any,
-                    __implementation=implementation,
-                    **method_kwargs: Any,
-                ):
-                    enforce_output_allowed()
-                    return __implementation(self, *args, **method_kwargs)
-
-                guarded_output_method = guarded_sync_output_method
-
-            setattr(guarded_output_method, "_hermes_output_gate_wrapped", True)
-            setattr(cls, method_name, guarded_output_method)
+            if getattr(implementation, "_hermes_output_gate_wrapped", False):
+                declaration = getattr(
+                    implementation,
+                    "_hermes_platform_mutation_declaration",
+                    "compatibility",
+                )
+                _PLATFORM_MUTATION_INVENTORY[
+                    _platform_mutation_key(implementation)
+                ] = {
+                    "kind": "platform_mutation",
+                    "declaration": declaration,
+                }
+                continue
+            setattr(
+                cls,
+                method_name,
+                _wrap_platform_mutation(
+                    implementation,
+                    declaration="compatibility",
+                ),
+            )
 
     # Whether this platform renders triple-backtick fenced code blocks (i.e.
     # ``format_message`` translates/preserves markdown fences into a real code
@@ -3427,6 +3499,47 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_turn_gate_scope_factory(self, factory: Optional[Callable[..., Any]]) -> None:
+        """Install the runner-owned canonical turn scope for inbound delivery."""
+        if factory is not None and not callable(factory):
+            raise TypeError("turn gate scope factory must be callable")
+        self._turn_gate_scope_factory = factory
+
+    async def _run_fresh_platform_mutation(
+        self,
+        entrypoint: str,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Acquire an independent host lease immediately before detached output."""
+        turn_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        identity = build_runtime_identity(
+            surface=entrypoint,
+            session_scope=session_id,
+            turn_id=turn_id,
+        )
+        request = TurnGateRequest(
+            entrypoint=entrypoint,
+            purpose="business",
+            task_id=session_id,
+            identity=identity,
+        )
+        with acquire_outer_turn(request):
+            return await operation()
+
+    def _schedule_detached_platform_mutation(
+        self,
+        entrypoint: str,
+        operation: Callable[[], Awaitable[Any]],
+        *,
+        name: Optional[str] = None,
+    ) -> asyncio.Task[Any]:
+        """Start output in an empty Context and acquire a fresh lease in that task."""
+        return create_detached_task(
+            self._run_fresh_platform_mutation(entrypoint, operation),
+            name=name,
+        )
 
     def set_topic_recovery_fn(
         self,
@@ -5950,6 +6063,20 @@ class BasePlatformAdapter(ABC):
             if inherited is not None and inherited.identity is not None
             else f"{session_scope}:{uuid.uuid4().hex}"
         )
+        scope_factory = getattr(self, "_turn_gate_scope_factory", None)
+        if scope_factory is None:
+            scope_factory = getattr(
+                getattr(self, "gateway_runner", None),
+                "_canonical_gateway_turn_scope",
+                None,
+            )
+        if callable(scope_factory):
+            with cast(
+                ContextManager[Any], scope_factory(event, session_scope, turn_id)
+            ):
+                return await self._process_message_background_unleased(
+                    event, session_key
+                )
         identity = build_runtime_identity(
             surface=getattr(self, "name", None) or "gateway",
             session_scope=session_scope,

@@ -177,41 +177,64 @@ def _load_config() -> dict:
         return {}
 
 
-def _resolve_orchestrator_profile(cfg: dict) -> str:
-    """Resolve which profile owns the root/orchestration task after fan-out.
+def _is_nonprivileged_profile(name: object) -> bool:
+    if not isinstance(name, str) or not name.strip():
+        return False
+    try:
+        canonical = kb._canonical_assignee(name)
+    except (TypeError, ValueError):
+        return False
+    return canonical not in kb.NON_DISPATCHABLE_PRIVILEGED_PROFILES
 
-    Falls back to the active default profile when ``kanban.orchestrator_profile``
-    is unset, so a task is never stranded for lack of an orchestrator.
-    """
+
+def _first_nonprivileged_profile() -> str:
+    try:
+        names = sorted(
+            p.name
+            for p in profiles_mod.list_profiles()
+            if _is_nonprivileged_profile(p.name)
+        )
+    except Exception:
+        return ""
+    return names[0] if names else ""
+
+
+def _resolve_orchestrator_profile(cfg: dict) -> str:
+    """Resolve a non-privileged profile for root orchestration."""
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get("orchestrator_profile") or "").strip()
-    if explicit:
+    if explicit and _is_nonprivileged_profile(explicit):
         try:
             if profiles_mod.profile_exists(explicit):
                 return explicit
         except Exception:
             pass
-    # Fall back to the active default profile.
     try:
-        return profiles_mod.get_active_profile_name() or "default"
+        active = profiles_mod.get_active_profile_name() or ""
+        if _is_nonprivileged_profile(active) and profiles_mod.profile_exists(active):
+            return active
     except Exception:
-        return "default"
+        pass
+    return _first_nonprivileged_profile()
 
 
 def _resolve_default_assignee(cfg: dict) -> str:
-    """Resolve which profile catches child tasks the orchestrator can't route."""
+    """Resolve a non-privileged child fallback, or fail closed with ``""``."""
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get("default_assignee") or "").strip()
-    if explicit:
+    if explicit and _is_nonprivileged_profile(explicit):
         try:
             if profiles_mod.profile_exists(explicit):
                 return explicit
         except Exception:
             pass
     try:
-        return profiles_mod.get_active_profile_name() or "default"
+        active = profiles_mod.get_active_profile_name() or ""
+        if _is_nonprivileged_profile(active) and profiles_mod.profile_exists(active):
+            return active
     except Exception:
-        return "default"
+        pass
+    return _first_nonprivileged_profile()
 
 
 def _build_roster() -> tuple[list[dict], set[str]]:
@@ -263,7 +286,7 @@ def _normalize_assignee_choice(
     if not isinstance(assignee, str) or not assignee.strip():
         return default_assignee
     chosen = assignee.strip()
-    if chosen not in valid_names:
+    if chosen not in valid_names or not _is_nonprivileged_profile(chosen):
         return default_assignee
     return chosen
 
@@ -296,6 +319,12 @@ def decompose_task(
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
     roster, valid_names = _build_roster()
+    if not orchestrator or not default_assignee:
+        return DecomposeOutcome(
+            task_id,
+            False,
+            f"{kb._PRIVILEGED_DELEGATION_POLICY}: no non-privileged profile available",
+        )
 
     try:
         from agent.auxiliary_client import call_llm  # type: ignore

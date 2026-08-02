@@ -66,7 +66,7 @@ def register(ctx):
 `acquire(request)` returns a `GateDecision`. `validate(decision, checkpoint)`
 is called again at consequential boundaries and must return the current
 decision. Hermes rejects provider identity mismatches, lease changes,
-generation changes, state downgrades, widened tool permissions, and changed
+generation changes, any state or tool-policy change, and changed
 child-environment contributions. `release(decision)` runs in `finally` after the
 outer turn.
 
