@@ -296,3 +296,74 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()
+
+
+def test_delegated_child_worker_does_not_inherit_parent_outer_turn() -> None:
+    """A background child is a detached turn, not a nested parent request."""
+    from agent.turn_gate import (
+        TurnGateRequest,
+        acquire_outer_turn,
+        clear_turn_gate_registry_for_testing,
+        current_turn_gate_request,
+    )
+    from tools import delegate_tool
+
+    class Parent:
+        _current_task_id = "parent-task"
+
+        def _touch_activity(self, _desc):
+            return None
+
+    seen = {}
+
+    class Child:
+        tool_progress_callback = None
+        _delegate_saved_tool_names = []
+        _credential_pool = None
+        _subagent_id = "sa-turn-gate-isolation"
+        _delegate_depth = 1
+        _parent_subagent_id = None
+        _delegate_role = "leaf"
+        model = "test-model"
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_estimated_cost_usd = 0.0
+        session_reasoning_tokens = 0
+
+        def get_activity_summary(self):
+            return {"api_call_count": 0, "max_iterations": 1, "current_tool": None}
+
+        def run_conversation(self, user_message, task_id, **_kwargs):
+            seen["child_request"] = current_turn_gate_request()
+            if seen["child_request"] is not None:
+                raise AssertionError("delegated child inherited parent outer turn")
+            return {
+                "final_response": "child completed",
+                "completed": True,
+                "api_calls": 0,
+                "messages": [],
+            }
+
+        def close(self):
+            return None
+
+    parent_request = TurnGateRequest(
+        entrypoint="gateway",
+        purpose="business",
+        task_id="parent-task",
+        identity=None,
+    )
+    clear_turn_gate_registry_for_testing()
+    try:
+        with acquire_outer_turn(parent_request):
+            result = delegate_tool._run_single_child(
+                0,
+                "run independently",
+                Child(),
+                Parent(),
+            )
+            assert current_turn_gate_request() is parent_request
+        assert result["status"] == "completed"
+        assert seen["child_request"] is None
+    finally:
+        clear_turn_gate_registry_for_testing()

@@ -491,6 +491,38 @@ async def test_detached_task_does_not_inherit_outer_turn_context() -> None:
     assert result is None
 
 
+def test_detached_outer_turn_context_acquires_fresh_child_and_restores_parent() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    parent = replace(_request(), entrypoint="gateway", task_id="parent-task")
+    child = replace(
+        _request(),
+        entrypoint="conversation",
+        task_id="child-task",
+        identity=replace(
+            _identity(),
+            surface="conversation",
+            session_instance_id="child-session",
+            turn_id="child-turn",
+        ),
+    )
+
+    with acquire_outer_turn(parent):
+        assert turn_gate.current_turn_gate_request() is parent
+        with turn_gate.detached_outer_turn_context():
+            assert turn_gate.current_turn_gate_request() is None
+            assert current_turn_gate_decision() is None
+            with acquire_outer_turn(child):
+                assert turn_gate.current_turn_gate_request() is child
+                enforce_output_allowed()
+        assert turn_gate.current_turn_gate_request() is parent
+        enforce_output_allowed()
+
+    assert provider.acquire_calls == 2
+    assert provider.release_calls == 2
+
+
 def test_malformed_config_latches_fail_closed_until_valid_reload() -> None:
     with pytest.raises(TurnGateBlocked, match="required_provider"):
         configure_turn_gate_from_config(

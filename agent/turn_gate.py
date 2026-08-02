@@ -202,6 +202,30 @@ def create_detached_task(coro, *, name: str | None = None) -> asyncio.Task:
     return Context().run(asyncio.create_task, coro, name=name)
 
 
+@contextmanager
+def detached_outer_turn_context() -> Iterator[None]:
+    """Detach a child worker from only the caller's turn-gate lease state.
+
+    Thread workers still need their copied profile, routing, observability, and
+    delegation ContextVars. Clearing just these five gate-owned values prevents
+    a detached child from validating, poisoning, or releasing its parent's
+    lease while allowing the child conversation to acquire a fresh one.
+    """
+    decision_token = _current_decision.set(None)
+    request_token = _current_request.set(None)
+    poison_token = _current_poison.set(None)
+    host_configuration_token = _current_host_configuration.set(None)
+    nested_scope_token = _canonical_nested_request_scope.set(None)
+    try:
+        yield
+    finally:
+        _canonical_nested_request_scope.reset(nested_scope_token)
+        _current_host_configuration.reset(host_configuration_token)
+        _current_poison.reset(poison_token)
+        _current_request.reset(request_token)
+        _current_decision.reset(decision_token)
+
+
 def register_turn_gate_provider(
     provider_id: str,
     provider: TurnGateProvider,

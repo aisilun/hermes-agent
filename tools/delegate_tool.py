@@ -2175,8 +2175,9 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
+            from agent.turn_gate import detached_outer_turn_context
 
-            with delegated_child_context():
+            with detached_outer_turn_context(), delegated_child_context():
                 return child.run_conversation(
                     user_message=goal,
                     task_id=child_task_id,
