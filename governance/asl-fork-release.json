@@ -35,6 +35,16 @@
     "upstream_tracking": "NousResearch/hermes-agent#74529",
     "reconciliation_policy": "official-tag-minimal-overlay"
   },
+  "kanban_privileged_profile_policy": {
+    "profile": "default",
+    "scope": "shared-kanban",
+    "automatic_dispatch": false,
+    "created_by_is_audit_only": true,
+    "blocked_control_cards_allowed": true,
+    "promotion_claim_dispatch_spawn_allowed": false,
+    "stable_policy": "privileged_profile_auto_dispatch_disabled",
+    "isolated_in_memory_database_legacy_flow_preserved": true
+  },
   "patch_queue": [
     {
       "id": "host-turn-gate",
@@ -83,7 +93,8 @@
         "d83815b361dd88e5e126fcece06ab6fe15290027"
       ],
       "upstream_coverage": "missing",
-      "decision": "retain"
+      "decision": "retain-and-tighten-nondispatchable-default",
+      "policy": "privileged_profile_auto_dispatch_disabled"
     }
   ],
   "distribution": {
@@ -118,6 +129,7 @@
       "tests/hermes_cli/test_kanban_db.py",
       "tests/hermes_cli/test_kanban_default_assignee.py",
       "tests/hermes_cli/test_kanban_privileged_delegation.py",
+      "tests/hermes_cli/test_kanban_default_non_dispatchable.py",
       "tests/test_asl_fork_release_contract.py",
       "tests/hermes_cli/test_banner_git_state.py",
       "tests/hermes_cli/test_cmd_update.py",

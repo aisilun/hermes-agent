@@ -42,7 +42,7 @@
 | runtime authorization safeguards（运行时授权防护） | `7ad87b9c…` | 部分覆盖 | 语义重放 Codex 上限、Kanban 粘性阻塞、飞书安全与压缩回归 |
 | ASL production CI（生产分支持续集成） | `16f97e2d…` | 不适用 | 保留 `asl/production` push／手工触发与 PR base 感知 |
 | macOS no-start install（禁止自动启动安装） | `9e152bcd…` | 部分覆盖 | 保留 no-start 与 runtime marker ignore（运行时标记忽略规则）；不重新引入 marker 文件 |
-| Kanban privileged delegation（特权配置档案委托防护） | `d83815b…` | 未覆盖 | 保留 create／assign／claim／dispatcher／spawn 全链 fail-closed（失败关闭） |
+| Kanban privileged profile（看板特权配置档案防护） | `d83815b…` | 未覆盖 | 保留并收紧：shared Kanban（共享看板）中的`default`全链不可自动调度；`created_by`仅作审计 |
 
 ## 官方基线直接继承的能力
 
@@ -58,9 +58,9 @@
 4. **Feishu approval safety（飞书审批安全）**：中文风险摘要、smart-deny（智能拒绝）仅本次覆盖，并在同步渲染成功卡片前严格检查 operator allowlist（操作人允许名单）。
 5. **Conversation compression recovery（会话压缩恢复）**：压缩失败不丢历史。
 6. **macOS no-start（禁止自动启动）**：`--no-start-now --no-start-on-login`完整透传，`RunAtLoad=false`、`KeepAlive=false`，安装时不 bootstrap（加载）服务。
-7. **Privileged delegation containment（特权委托遏制）**：`default`是 code-owned privileged profile（代码持有的特权配置档案）；非可信、空来源、旧行、重派回流和 `kanban.default_assignee=default`均在凭据读取和副作用前拒绝。
+7. **Privileged profile containment（特权配置档案遏制）**：shared Kanban（共享看板）中的`default`是 code-owned privileged profile（代码持有的特权配置档案），且全链 non-dispatchable（不可自动调度）。`created_by`只保存审计来源，不参与授权；create／assign／promote／unblock／claim／review-claim／dispatcher／`kanban.default_assignee`／decompose fallback（分解回退）／spawn 均在凭据读取与副作用前失败关闭。`blocked`控制卡可保存，但不能被晋级、领取或派发；真正隔离的内存 DB 保持原有本地语义。
 
-特权委托补丁不是完整 zero-trust broker（零信任授权代理）。同一 OS 用户直接修改 SQLite／进程环境、跨 profile single-use grant（跨配置档案单次授权）和不可伪造 provenance（来源证明）仍不属于本候选的解决范围。
+特权配置档案补丁不是完整 zero-trust broker（零信任授权代理）。同一 OS 用户直接修改 SQLite／进程环境、跨 profile single-use grant（跨配置档案单次授权）和不可伪造 principal binding（主体绑定）仍不属于本候选的解决范围；因此任何旧行或绕过写入仍必须在 claim／dispatch／spawn 最终边界再次失败关闭。
 
 ## 分发与维护责任
 

@@ -52,7 +52,7 @@ def _assert_policy_blocked(conn, task_id: str) -> None:
         event.kind == "blocked"
         and event.payload
         and event.payload.get("kind") == "capability"
-        and event.payload.get("policy") == "privileged_delegation"
+        and event.payload.get("policy") == "privileged_profile_auto_dispatch_disabled"
         for event in events
     )
 
@@ -71,7 +71,7 @@ def _parse_kanban_cli(argv: list[str]):
 )
 def test_create_rejects_untrusted_origin_targeting_default(isolated_kanban, creator):
     with kb.connect_closing() as conn:
-        with pytest.raises(ValueError, match="privileged delegation denied"):
+        with pytest.raises(ValueError, match="privileged_profile_auto_dispatch_disabled"):
             kb.create_task(
                 conn,
                 title="escalate",
@@ -82,13 +82,16 @@ def test_create_rejects_untrusted_origin_targeting_default(isolated_kanban, crea
         assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
-def test_create_preserves_legitimate_delegation_shapes(isolated_kanban):
+def test_create_preserves_control_card_and_nonprivileged_delegation_shapes(
+    isolated_kanban,
+):
     with kb.connect_closing() as conn:
-        default_self = kb.create_task(
+        default_control = kb.create_task(
             conn,
-            title="default self-task",
+            title="default control card",
             assignee="default",
-            created_by="default",
+            created_by="audit-only",
+            initial_status="blocked",
         )
         worker_peer = kb.create_task(
             conn,
@@ -103,12 +106,12 @@ def test_create_preserves_legitimate_delegation_shapes(isolated_kanban):
             created_by="default",
         )
 
-        assert _required_task(conn, default_self).assignee == "default"
+        assert _required_task(conn, default_control).status == "blocked"
         assert _required_task(conn, worker_peer).assignee == "reviewer"
         assert _required_task(conn, default_to_worker).assignee == "worker-a"
 
 
-def test_model_tool_surfaces_privileged_delegation_denial(isolated_kanban, monkeypatch):
+def test_model_tool_surfaces_privileged_profile_auto_dispatch_disabled_denial(isolated_kanban, monkeypatch):
     from tools import kanban_tools
 
     monkeypatch.setenv("HERMES_PROFILE", "xiaozhen")
@@ -122,12 +125,12 @@ def test_model_tool_surfaces_privileged_delegation_denial(isolated_kanban, monke
         })
     )
     assert payload.get("ok") is not True
-    assert "privileged delegation denied" in payload.get("error", "")
+    assert "privileged_profile_auto_dispatch_disabled" in payload.get("error", "")
     with kb.connect_closing() as conn:
         assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
-def test_model_tool_resolves_default_profile_without_env_var(
+def test_model_tool_without_env_cannot_self_authorize_default(
     isolated_kanban, monkeypatch
 ):
     from tools import kanban_tools
@@ -142,14 +145,15 @@ def test_model_tool_resolves_default_profile_without_env_var(
             "assignee": "default",
         })
     )
-    assert payload.get("ok") is True, payload
+    assert payload.get("ok") is not True
+    assert "privileged_profile_auto_dispatch_disabled" in payload.get("error", "")
     with kb.connect_closing() as conn:
-        task = _required_task(conn, payload["task_id"])
-        assert task.assignee == "default"
-        assert task.created_by == "default"
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
-def test_cli_rejects_spoofed_default_created_by(isolated_kanban, monkeypatch, capsys):
+def test_cli_created_by_cannot_authorize_default(
+    isolated_kanban, monkeypatch, capsys
+):
     from hermes_cli import kanban
 
     monkeypatch.setenv("HERMES_PROFILE", "xiaozhen")
@@ -162,35 +166,36 @@ def test_cli_rejects_spoofed_default_created_by(isolated_kanban, monkeypatch, ca
         "default",
     ])
 
-    assert kanban.kanban_command(args) == 2
-    assert "privileged delegation denied" in capsys.readouterr().err
+    assert kanban.kanban_command(args) == 1
+    assert "privileged_profile_auto_dispatch_disabled" in capsys.readouterr().err
     with kb.connect_closing() as conn:
         assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
-def test_cli_rejects_spoofed_origin_before_two_step_reassignment(
-    isolated_kanban, monkeypatch, capsys
+def test_cli_created_by_is_preserved_as_audit_for_nonprivileged_task(
+    isolated_kanban, monkeypatch
 ):
     from hermes_cli import kanban
 
     monkeypatch.setenv("HERMES_PROFILE", "xiaozhen")
     args = _parse_kanban_cli([
         "create",
-        "stage before escalation",
+        "ordinary delegated task",
         "--assignee",
         "worker-a",
         "--created-by",
         "default",
     ])
 
-    assert kanban.kanban_command(args) == 2
-    assert "privileged delegation denied" in capsys.readouterr().err
+    assert kanban.kanban_command(args) == 0
     with kb.connect_closing() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        task = kb.list_tasks(conn, limit=10)[0]
+        assert task.assignee == "worker-a"
+        assert task.created_by == "default"
 
 
-def test_cli_default_profile_stamps_trusted_origin_without_override(
-    isolated_kanban, monkeypatch
+def test_cli_default_profile_cannot_self_authorize_default(
+    isolated_kanban, monkeypatch, capsys
 ):
     from hermes_cli import kanban
 
@@ -203,11 +208,10 @@ def test_cli_default_profile_stamps_trusted_origin_without_override(
         "--json",
     ])
 
-    assert kanban.kanban_command(args) == 0
+    assert kanban.kanban_command(args) == 1
+    assert "privileged_profile_auto_dispatch_disabled" in capsys.readouterr().err
     with kb.connect_closing() as conn:
-        task = kb.list_tasks(conn, limit=10)[0]
-        assert task.assignee == "default"
-        assert task.created_by == "default"
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
 def test_assign_rejects_nondefault_origin_targeting_default(isolated_kanban):
@@ -218,7 +222,7 @@ def test_assign_rejects_nondefault_origin_targeting_default(isolated_kanban):
             assignee="worker-a",
             created_by="worker-a",
         )
-        with pytest.raises(ValueError, match="privileged reassignment denied"):
+        with pytest.raises(ValueError, match="privileged_profile_auto_dispatch_disabled"):
             kb.assign_task(conn, task_id, "default")
         assert _required_task(conn, task_id).assignee == "worker-a"
 
@@ -227,12 +231,15 @@ def test_assign_allows_privileged_task_noop(isolated_kanban):
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
-            title="operator-owned",
+            title="operator-owned control card",
             assignee="default",
             created_by="default",
+            initial_status="blocked",
         )
         assert kb.assign_task(conn, task_id, "default") is True
-        assert _required_task(conn, task_id).assignee == "default"
+        task = _required_task(conn, task_id)
+        assert task.assignee == "default"
+        assert task.status == "blocked"
 
 
 def test_assign_rejects_default_origin_after_handoff(isolated_kanban):
@@ -243,7 +250,7 @@ def test_assign_rejects_default_origin_after_handoff(isolated_kanban):
             assignee="worker-a",
             created_by="default",
         )
-        with pytest.raises(ValueError, match="privileged reassignment denied"):
+        with pytest.raises(ValueError, match="privileged_profile_auto_dispatch_disabled"):
             kb.assign_task(conn, task_id, "default")
         assert _required_task(conn, task_id).assignee == "worker-a"
 
@@ -294,7 +301,7 @@ def test_dispatch_blocks_legacy_default_task_without_spawn(
         _assert_policy_blocked(conn, task_id)
 
 
-def test_default_spawn_rejects_privileged_delegation_before_popen(
+def test_default_spawn_rejects_privileged_profile_auto_dispatch_disabled_before_popen(
     isolated_kanban, monkeypatch, tmp_path
 ):
     import subprocess
@@ -330,7 +337,7 @@ def test_default_spawn_rejects_privileged_delegation_before_popen(
     monkeypatch.setattr(kb, "_resolve_worker_cli_toolsets", lambda _home: None)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    with pytest.raises(ValueError, match="privileged delegation denied"):
+    with pytest.raises(ValueError, match="privileged_profile_auto_dispatch_disabled"):
         kb._default_spawn(task, str(tmp_path))
     assert profile_env_calls == []
     assert popen_calls == []

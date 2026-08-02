@@ -83,15 +83,20 @@ def test_unassigned_task_auto_assigned_with_nonprivileged_default_assignee(
 
 
 
-def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_home):
+def test_explicitly_assigned_task_untouched_by_default_assignee(
+    isolated_kanban_home, monkeypatch
+):
     """A task with an explicit assignee must NOT be touched by the
     default_assignee logic — that fallback only applies to genuinely
     unassigned rows."""
     kb, _home = isolated_kanban_home
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "worker-a")
     with kb.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         task_id = kb.create_task(
-            conn, title="t1", assignee="default", created_by="default"
+            conn, title="t1", assignee="worker-a", created_by="default"
         )
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
@@ -99,6 +104,6 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
             default_assignee="someother",
         )
     assert task_id not in res.auto_assigned_default
-    assert any(s[0] == task_id and s[1] == "default" for s in res.spawned)
+    assert any(s[0] == task_id and s[1] == "worker-a" for s in res.spawned)
 
 

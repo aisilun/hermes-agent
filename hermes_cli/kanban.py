@@ -357,8 +357,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument(
         "--created-by",
         default=None,
-        help="Author name recorded on the task (default: active profile). "
-             "When provided, it must match the active profile.",
+        help="Audit author name recorded on the task (default: active profile). "
+             "This value is not an authorization principal.",
     )
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
                           help="Skill to force-load into the worker "
@@ -1120,19 +1120,9 @@ def _profile_author() -> str:
 def _resolve_cli_created_by(
     requested: Optional[str],
 ) -> str:
-    """Resolve CLI provenance without allowing a privileged-profile spoof."""
-    runtime_author = _profile_author()
-    requested_author = (requested or "").strip() or None
-    if (
-        requested_author is not None
-        and kb._canonical_task_creator(requested_author)
-        != kb._canonical_task_creator(runtime_author)
-    ):
-        raise kb.PrivilegedDelegationError(
-            "privileged delegation denied: --created-by must match the "
-            f"active profile {runtime_author!r}"
-        )
-    return runtime_author
+    """Resolve audit provenance; never treat it as an authorization principal."""
+    requested_author = (requested or "").strip()
+    return requested_author or _profile_author()
 
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({

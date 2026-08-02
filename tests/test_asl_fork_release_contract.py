@@ -34,6 +34,7 @@ EXPECTED_REQUIRED_TESTS = {
     "tests/hermes_cli/test_kanban_db.py",
     "tests/hermes_cli/test_kanban_default_assignee.py",
     "tests/hermes_cli/test_kanban_privileged_delegation.py",
+    "tests/hermes_cli/test_kanban_default_non_dispatchable.py",
     "tests/test_asl_fork_release_contract.py",
     "tests/hermes_cli/test_banner_git_state.py",
     "tests/hermes_cli/test_cmd_update.py",
@@ -78,7 +79,8 @@ EXPECTED_PATCH_QUEUE = [
         "id": "kanban-privileged-delegation",
         "source_commits": ["d83815b361dd88e5e126fcece06ab6fe15290027"],
         "upstream_coverage": "missing",
-        "decision": "retain",
+        "decision": "retain-and-tighten-nondispatchable-default",
+        "policy": "privileged_profile_auto_dispatch_disabled",
     },
 ]
 
@@ -96,6 +98,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "release_state",
         "source",
         "maintenance",
+        "kanban_privileged_profile_policy",
         "patch_queue",
         "distribution",
         "verification",
@@ -103,6 +106,16 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "authorization",
     }
     assert contract["schema_version"] == 2
+    assert contract["kanban_privileged_profile_policy"] == {
+        "profile": "default",
+        "scope": "shared-kanban",
+        "automatic_dispatch": False,
+        "created_by_is_audit_only": True,
+        "blocked_control_cards_allowed": True,
+        "promotion_claim_dispatch_spawn_allowed": False,
+        "stable_policy": "privileged_profile_auto_dispatch_disabled",
+        "isolated_in_memory_database_legacy_flow_preserved": True,
+    }
     assert contract["candidate"] == {
         "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
