@@ -1,5 +1,6 @@
 """Tests for Feishu interactive card approval buttons."""
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -57,6 +58,7 @@ def _make_adapter() -> FeishuAdapter:
 def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
+    message_id: str = "",
     open_id: str = "ou_user1",
     token: str = "tok_abc",
 ) -> SimpleNamespace:
@@ -64,7 +66,10 @@ def _make_card_action_data(
     return SimpleNamespace(
         event=SimpleNamespace(
             token=token,
-            context=SimpleNamespace(open_chat_id=chat_id),
+            context=SimpleNamespace(
+                open_chat_id=chat_id,
+                open_message_id=message_id,
+            ),
             operator=SimpleNamespace(open_id=open_id),
             action=SimpleNamespace(
                 tag="button",
@@ -207,34 +212,48 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_once(self):
         adapter = _make_adapter()
-        adapter._approval_state[1] = {
+        adapter._approval_state["nonce-1"] = {
             "session_key": "agent:main:feishu:group:oc_12345",
             "message_id": "msg_001",
             "chat_id": "oc_12345",
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
+            await adapter._resolve_approval(
+                "nonce-1",
+                "once",
+                "Norbert",
+                open_id="ou_user1",
+                chat_id="oc_12345",
+                message_id="msg_001",
+            )
 
         mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
-        assert 1 not in adapter._approval_state
+        assert "nonce-1" not in adapter._approval_state
 
 
     @pytest.mark.asyncio
     async def test_unauthorized_click_does_not_resolve(self):
         adapter = _make_adapter()
         adapter._admins = {"ou_admin"}
-        adapter._approval_state[5] = {
+        adapter._approval_state["nonce-5"] = {
             "session_key": "sess-5",
             "message_id": "msg_005",
             "chat_id": "oc_12345",
         }
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
-            await adapter._resolve_approval(5, "once", "Mallory", open_id="ou_intruder", chat_id="oc_12345")
+            await adapter._resolve_approval(
+                "nonce-5",
+                "once",
+                "Mallory",
+                open_id="ou_intruder",
+                chat_id="oc_12345",
+                message_id="msg_005",
+            )
 
         mock_resolve.assert_not_called()
-        assert 5 in adapter._approval_state
+        assert "nonce-5" in adapter._approval_state
 
 
 # ===========================================================================
@@ -310,13 +329,14 @@ class TestCardActionCallbackResponse:
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._allowed_group_users = {"ou_bob"}
-        adapter._approval_state[1] = {
+        adapter._approval_state["nonce-1"] = {
             "session_key": "sess-1",
             "message_id": "msg-1",
             "chat_id": "oc_12345",
         }
         data = _make_card_action_data(
-            {"hermes_action": "approve_once", "approval_id": 1},
+            {"hermes_action": "approve_once", "approval_id": "nonce-1"},
+            message_id="msg-1",
             open_id="ou_bob",
         )
         adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
@@ -338,13 +358,14 @@ class TestCardActionCallbackResponse:
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._allowed_group_users = {"ou_expired"}
-        adapter._approval_state[4] = {
+        adapter._approval_state["nonce-4"] = {
             "session_key": "sess-4",
             "message_id": "msg-4",
             "chat_id": "oc_12345",
         }
         data = _make_card_action_data(
-            {"hermes_action": "approve_once", "approval_id": 4},
+            {"hermes_action": "approve_once", "approval_id": "nonce-4"},
+            message_id="msg-4",
             open_id="ou_expired",
         )
         adapter._sender_name_cache["ou_expired"] = ("Old Name", 1)
@@ -363,13 +384,14 @@ class TestCardActionCallbackResponse:
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._allowed_group_users = {"ou_allowed"}
-        adapter._approval_state[5] = {
+        adapter._approval_state["nonce-5"] = {
             "session_key": "sess-5",
             "message_id": "msg-5",
             "chat_id": "oc_12345",
         }
         data = _make_card_action_data(
-            {"hermes_action": "approve_once", "approval_id": 5},
+            {"hermes_action": "approve_once", "approval_id": "nonce-5"},
+            message_id="msg-5",
             open_id="ou_attacker",
         )
 
@@ -378,7 +400,7 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
-        assert 5 in adapter._approval_state
+        assert "nonce-5" in adapter._approval_state
         mock_submit.assert_not_called()
 
 
@@ -388,14 +410,15 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
-        adapter._update_prompt_state[1] = {
+        adapter._update_prompt_state["prompt-1"] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_006",
             "chat_id": "oc_12345",
         }
         adapter._allowed_group_users = {"ou_allowed"}
         data = _make_card_action_data(
-            {"hermes_update_prompt_action": "y", "update_prompt_id": 1},
+            {"hermes_update_prompt_action": "y", "update_prompt_id": "prompt-1"},
+            message_id="msg_up_006",
             open_id="ou_intruder",
         )
 
@@ -404,7 +427,7 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
-        assert 1 in adapter._update_prompt_state
+        assert "prompt-1" in adapter._update_prompt_state
         mock_submit.assert_not_called()
 
 
@@ -413,14 +436,15 @@ class TestCardActionCallbackResponse:
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._allowed_group_users = {"ou_bob"}
-        adapter._update_prompt_state[8] = {
+        adapter._update_prompt_state["prompt-8"] = {
             "session_key": "sess-up-8",
             "message_id": "msg_up_008",
             "chat_id": "oc_expected",
         }
         data = _make_card_action_data(
-            {"hermes_update_prompt_action": "y", "update_prompt_id": 8},
+            {"hermes_update_prompt_action": "y", "update_prompt_id": "prompt-8"},
             chat_id="oc_mismatch",
+            message_id="msg_up_008",
             open_id="ou_bob",
         )
 
@@ -428,8 +452,8 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         assert response is not None
-        assert response.card is None
-        assert 8 in adapter._update_prompt_state
+        assert response.card.data["header"]["template"] == "red"
+        assert "prompt-8" in adapter._update_prompt_state
         mock_submit.assert_not_called()
 
 
@@ -441,16 +465,22 @@ class TestResolveUpdatePrompt:
         adapter = _make_adapter()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
-        adapter._update_prompt_state[1] = {
+        adapter._update_prompt_state["prompt-1"] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_003",
             "chat_id": "oc_12345",
         }
 
-        await adapter._resolve_update_prompt(1, "y", "Alice")
+        await adapter._resolve_update_prompt(
+            "prompt-1",
+            "y",
+            "Alice",
+            chat_id="oc_12345",
+            message_id="msg_up_003",
+        )
 
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
-        assert 1 not in adapter._update_prompt_state
+        assert "prompt-1" not in adapter._update_prompt_state
 
 
 @pytest.mark.asyncio
@@ -543,5 +573,177 @@ async def test_smart_denied_keeps_only_one_shot_override():
         "approve_once", "deny"
     ]
     assert "智能审批建议拒绝" in card["elements"][0]["content"]
+
+
+class TestApprovalNonceAndMessageBinding:
+    @pytest.mark.asyncio
+    async def test_generated_approval_and_prompt_ids_are_opaque_strings(self):
+        adapter = _make_adapter()
+        responses = [
+            SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="msg-a")),
+            SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="msg-b")),
+        ]
+        with patch.object(
+            adapter,
+            "_feishu_send_with_retry",
+            new_callable=AsyncMock,
+            side_effect=responses,
+        ) as send:
+            await adapter.send_exec_approval("oc_12345", "date", "sess-a")
+            approval_card = json.loads(send.call_args_list[0].kwargs["payload"])
+            await adapter.send_update_prompt("oc_12345", "continue?", session_key="sess-b")
+            prompt_card = json.loads(send.call_args_list[1].kwargs["payload"])
+
+        approval_id = approval_card["elements"][1]["actions"][0]["value"]["approval_id"]
+        prompt_id = prompt_card["elements"][1]["actions"][0]["value"]["update_prompt_id"]
+        assert isinstance(approval_id, str) and len(approval_id) >= 20
+        assert isinstance(prompt_id, str) and len(prompt_id) >= 20
+        assert approval_id in adapter._approval_state
+        assert prompt_id in adapter._update_prompt_state
+
+    @pytest.mark.parametrize("callback_message_id", ["", "msg-wrong"])
+    def test_approval_rejects_missing_or_mismatched_message_id(
+        self,
+        _patch_callback_card_types,
+        callback_message_id,
+    ):
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed.return_value = False
+        nonce = "opaque-approval-nonce"
+        adapter._approval_state[nonce] = {
+            "session_key": "sess",
+            "message_id": "msg-exact",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": nonce},
+            message_id=callback_message_id,
+        )
+
+        with patch.object(adapter, "_submit_on_loop") as submit:
+            response = adapter._on_card_action_trigger(data)
+
+        submit.assert_not_called()
+        assert nonce in adapter._approval_state
+        assert response.card.type == "raw"
+        assert response.card.data["header"]["template"] == "red"
+        assert "拒绝" in response.card.data["header"]["title"]["content"]
+
+    def test_exact_approval_triple_schedules_once_and_second_click_rejects(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed.return_value = False
+        nonce = "opaque-approval-nonce"
+        adapter._approval_state[nonce] = {
+            "session_key": "sess",
+            "message_id": "msg-exact",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": nonce},
+            message_id="msg-exact",
+        )
+
+        with patch.object(adapter, "_submit_on_loop", side_effect=_close_submitted_coro) as submit:
+            first = adapter._on_card_action_trigger(data)
+            second = adapter._on_card_action_trigger(data)
+
+        assert submit.call_count == 1
+        assert first.card.data["header"]["template"] == "green"
+        assert second.card.data["header"]["template"] == "red"
+
+    def test_adapter_rebuild_rejects_old_card(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed.return_value = False
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": "old-process-nonce"},
+            message_id="old-message",
+        )
+        with patch.object(adapter, "_submit_on_loop") as submit:
+            response = adapter._on_card_action_trigger(data)
+        submit.assert_not_called()
+        assert response.card.data["header"]["template"] == "red"
+
+    def test_update_prompt_requires_exact_message_and_rejects_second_click(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed.return_value = False
+        nonce = "opaque-update-nonce"
+        adapter._update_prompt_state[nonce] = {
+            "session_key": "sess",
+            "message_id": "msg-update",
+            "chat_id": "oc_12345",
+        }
+        wrong = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": nonce},
+            message_id="msg-old-card",
+        )
+        exact = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": nonce},
+            message_id="msg-update",
+        )
+
+        with patch.object(adapter, "_submit_on_loop", side_effect=_close_submitted_coro) as submit:
+            rejected = adapter._on_card_action_trigger(wrong)
+            accepted = adapter._on_card_action_trigger(exact)
+            duplicate = adapter._on_card_action_trigger(exact)
+
+        assert submit.call_count == 1
+        assert rejected.card.data["header"]["template"] == "red"
+        assert accepted.card.data["header"]["template"] == "green"
+        assert duplicate.card.data["header"]["template"] == "red"
+
+    @pytest.mark.asyncio
+    async def test_async_resolver_rechecks_message_and_consumes_at_most_once(self):
+        adapter = _make_adapter()
+        nonce = "opaque-approval-nonce"
+        adapter._approval_state[nonce] = {
+            "session_key": "sess",
+            "message_id": "msg-exact",
+            "chat_id": "oc_12345",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+            await adapter._resolve_approval(
+                nonce,
+                "once",
+                "Alice",
+                open_id="ou_user1",
+                chat_id="oc_12345",
+                message_id="msg-wrong",
+            )
+            assert nonce in adapter._approval_state
+            await asyncio.gather(
+                adapter._resolve_approval(
+                    nonce,
+                    "once",
+                    "Alice",
+                    open_id="ou_user1",
+                    chat_id="oc_12345",
+                    message_id="msg-exact",
+                ),
+                adapter._resolve_approval(
+                    nonce,
+                    "once",
+                    "Alice",
+                    open_id="ou_user1",
+                    chat_id="oc_12345",
+                    message_id="msg-exact",
+                ),
+            )
+
+        resolve.assert_called_once_with("sess", "once")
+        assert nonce not in adapter._approval_state
 
 
