@@ -190,8 +190,8 @@ _current_poison: ContextVar[_TurnPoison | None] = ContextVar(
 _current_host_configuration: ContextVar[_HostConfigurationSnapshot | None] = ContextVar(
     "hermes_turn_gate_host_configuration", default=None
 )
-_canonical_nested_entrypoint: ContextVar[str | None] = ContextVar(
-    "hermes_turn_gate_canonical_nested_entrypoint", default=None
+_canonical_nested_request_scope: ContextVar[tuple[str, str | None] | None] = ContextVar(
+    "hermes_turn_gate_canonical_nested_request_scope", default=None
 )
 
 
@@ -467,11 +467,15 @@ def clear_turn_gate_registry_for_testing() -> None:
     _current_request.set(None)
     _current_poison.set(None)
     _current_host_configuration.set(None)
-    _canonical_nested_entrypoint.set(None)
+    _canonical_nested_request_scope.set(None)
 
 
 @contextmanager
-def canonical_nested_outer_turn(entrypoint: str) -> Iterator[TurnGateRequest | None]:
+def canonical_nested_outer_turn(
+    entrypoint: str,
+    *,
+    task_id: str | None = None,
+) -> Iterator[TurnGateRequest | None]:
     """Let a host adapter reuse its current request at a nested public API.
 
     The marker does not authorize a new identity. It only lets the named
@@ -481,15 +485,20 @@ def canonical_nested_outer_turn(entrypoint: str) -> Iterator[TurnGateRequest | N
     """
     if type(entrypoint) is not str or not entrypoint.strip():
         raise ValueError("nested outer-turn entrypoint must be non-empty text")
+    if task_id is not None and (
+        type(task_id) is not str or not task_id.strip() or "\x00" in task_id
+    ):
+        raise ValueError("nested outer-turn task_id must be non-empty text")
     current = _current_request.get()
     if current is None:
         yield None
         return
-    token = _canonical_nested_entrypoint.set(entrypoint)
+    nested_task_id = current.task_id if task_id is None else task_id
+    token = _canonical_nested_request_scope.set((entrypoint, nested_task_id))
     try:
         yield current
     finally:
-        _canonical_nested_entrypoint.reset(token)
+        _canonical_nested_request_scope.reset(token)
 
 
 def build_runtime_identity(
@@ -507,11 +516,10 @@ def build_runtime_identity(
         if type(value) is not str or not value.strip() or "\x00" in value:
             raise ValueError(f"runtime {field_name} must be non-empty text")
     current = _current_request.get()
-    nested_entrypoint = _canonical_nested_entrypoint.get()
+    nested_scope = _canonical_nested_request_scope.get()
     if (
         current is not None
-        and nested_entrypoint == surface
-        and current.task_id == session_scope
+        and nested_scope == (surface, session_scope)
     ):
         return current.identity
     with _registry_lock:
@@ -688,12 +696,12 @@ def acquire_outer_turn(
         if poisoned_reason is not None:
             raise TurnGateBlocked(f"outer-turn lease is poisoned: {poisoned_reason}")
         _validate_host_configuration_binding()
-        nested_entrypoint = _canonical_nested_entrypoint.get()
+        nested_scope = _canonical_nested_request_scope.get()
         canonical_nested_request = (
-            nested_entrypoint is not None
-            and request.entrypoint == nested_entrypoint
+            nested_scope is not None
+            and request.entrypoint == nested_scope[0]
             and request.purpose == current_request.purpose
-            and request.task_id == current_request.task_id
+            and request.task_id == nested_scope[1]
             and request.identity is current_request.identity
         )
         if request != current_request and not canonical_nested_request:

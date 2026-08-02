@@ -5085,7 +5085,10 @@ class TurnRunner:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
             from agent.turn_gate import canonical_nested_outer_turn
 
-            with canonical_nested_outer_turn("conversation"):
+            with canonical_nested_outer_turn(
+                "conversation",
+                task_id=ctx.session_id,
+            ):
                 result = agent.run_conversation(
                     _api_run_message,
                     **_conversation_kwargs,

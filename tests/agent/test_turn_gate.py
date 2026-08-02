@@ -261,6 +261,73 @@ def test_gateway_bridge_reuses_canonical_request_for_nested_conversation() -> No
     assert provider.release_calls == 1
 
 
+def test_gateway_bridge_allows_explicit_host_bound_nested_task_scope() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(
+        _request(),
+        entrypoint="gateway",
+        task_id="opaque-gateway-turn-scope",
+    )
+
+    with acquire_outer_turn(outer) as decision:
+        with turn_gate.canonical_nested_outer_turn(
+            "conversation",
+            task_id="conversation-session-id",
+        ):
+            nested_identity = build_runtime_identity(
+                surface="conversation",
+                session_scope="conversation-session-id",
+                turn_id="nested-turn",
+            )
+            nested = TurnGateRequest(
+                entrypoint="conversation",
+                purpose=outer.purpose,
+                task_id="conversation-session-id",
+                identity=nested_identity,
+            )
+            with acquire_outer_turn(nested) as nested_decision:
+                assert nested_decision is decision
+                assert nested_identity is outer.identity
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
+def test_gateway_bridge_rejects_unbound_nested_task_scope() -> None:
+    _configure()
+    provider = FakeProvider(_decision())
+    _register(provider)
+    outer = replace(
+        _request(),
+        entrypoint="gateway",
+        task_id="opaque-gateway-turn-scope",
+    )
+
+    with acquire_outer_turn(outer):
+        with turn_gate.canonical_nested_outer_turn(
+            "conversation",
+            task_id="authorized-conversation-session",
+        ):
+            forged = replace(
+                outer,
+                entrypoint="conversation",
+                task_id="forged-conversation-session",
+            )
+            with pytest.raises(
+                TurnGateBlocked,
+                match="canonical outer-turn request mismatch",
+            ):
+                with acquire_outer_turn(forged):
+                    pytest.fail("unbound nested task scope must not run")
+        with pytest.raises(TurnGateBlocked, match="poisoned"):
+            enforce_output_allowed()
+
+    assert provider.acquire_calls == 1
+    assert provider.release_calls == 1
+
+
 def test_gateway_bridge_does_not_authorize_nested_identity_change() -> None:
     _configure()
     provider = FakeProvider(_decision())
