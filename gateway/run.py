@@ -10609,6 +10609,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             
             # Set up message + fatal error handlers
+            adapter.set_turn_gate_scope_factory(self._canonical_gateway_turn_scope)
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
@@ -11710,6 +11711,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         del self._failed_platforms[platform]
                         continue
 
+                    adapter.set_turn_gate_scope_factory(
+                        self._canonical_gateway_turn_scope
+                    )
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
@@ -12650,6 +12654,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform: Platform,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
+        adapter.set_turn_gate_scope_factory(self._canonical_gateway_turn_scope)
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)
@@ -23047,6 +23052,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=message_type,
             )
 
+    @_contextmanager
+    def _canonical_gateway_turn_scope(
+        self,
+        event: Any,
+        session_scope: str,
+        turn_id: str,
+    ):
+        """Create one routed-profile request covering typing, tools, and delivery."""
+        from contextlib import nullcontext
+
+        from agent.turn_gate import (
+            TurnGateRequest,
+            acquire_outer_turn,
+            build_runtime_identity,
+        )
+
+        source = event.source
+        profile_scope = nullcontext()
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_scope = _profile_runtime_scope(
+                self._resolve_profile_home_for_source(source)
+            )
+        with profile_scope:
+            platform = getattr(source, "platform", None)
+            surface = getattr(platform, "value", None) or str(platform or "gateway")
+            identity = build_runtime_identity(
+                surface=surface,
+                session_scope=session_scope,
+                turn_id=turn_id,
+            )
+            request = TurnGateRequest(
+                entrypoint="gateway",
+                purpose="business",
+                task_id=session_scope,
+                identity=identity,
+            )
+            with acquire_outer_turn(request):
+                yield request
+
     async def _run_agent_inner(
         self,
         message: str,
@@ -23069,21 +23113,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             TurnGateRequest,
             acquire_outer_turn,
             build_runtime_identity,
+            current_turn_gate_request,
             enforce_output_allowed,
         )
 
-        turn_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
-        identity = build_runtime_identity(
-            surface="gateway",
-            session_scope=session_id,
-            turn_id=turn_id,
-        )
-        request = TurnGateRequest(
-            entrypoint="gateway",
-            purpose="business",
-            task_id=session_id,
-            identity=identity,
-        )
+        request = current_turn_gate_request()
+        if request is None:
+            turn_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
+            identity = build_runtime_identity(
+                surface="gateway",
+                session_scope=session_id,
+                turn_id=turn_id,
+            )
+            request = TurnGateRequest(
+                entrypoint="gateway",
+                purpose="business",
+                task_id=session_id,
+                identity=identity,
+            )
         with acquire_outer_turn(request):
             result = await self._run_agent_inner_unleased(
                 message, context_prompt, history, source, session_id,

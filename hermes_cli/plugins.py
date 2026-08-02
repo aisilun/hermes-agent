@@ -1363,6 +1363,7 @@ class PluginManager:
         # already gone by the time it runs). A successful clean (including
         # SAFE_MODE) commits.
         _gate_registry_snapshot = None
+        _gate_host_configuration_snapshot = None
         _discovery_snapshot = None
         _host_registry_snapshot = None
         self._force_reload_prior_gate_provider_ids = (
@@ -1370,11 +1371,13 @@ class PluginManager:
         )
         if force:
             from agent.turn_gate import (
+                snapshot_turn_gate_host_configuration,
                 snapshot_turn_gate_providers,
                 unregister_turn_gate_providers_by_owner,
             )
 
             _gate_registry_snapshot = snapshot_turn_gate_providers()
+            _gate_host_configuration_snapshot = snapshot_turn_gate_host_configuration()
             _discovery_snapshot = self._snapshot_discovery_state()
             _host_registry_snapshot = self._snapshot_force_reload_host_state()
             self._force_reload_active = True
@@ -1437,9 +1440,15 @@ class PluginManager:
                 if force:
                     # Roll the whole round back to the exact pre-teardown state:
                     # provider objects, tracking, and every cleared discovery map.
-                    from agent.turn_gate import restore_turn_gate_providers
+                    from agent.turn_gate import (
+                        restore_turn_gate_host_configuration,
+                        restore_turn_gate_providers,
+                    )
 
                     restore_turn_gate_providers(_gate_registry_snapshot)
+                    restore_turn_gate_host_configuration(
+                        _gate_host_configuration_snapshot
+                    )
                     assert _host_registry_snapshot is not None
                     self._restore_force_reload_host_state(_host_registry_snapshot)
                     self._restore_discovery_state(_discovery_snapshot)

@@ -550,7 +550,18 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    ContextManager,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -3428,6 +3439,12 @@ class BasePlatformAdapter(ABC):
         """
         self._message_handler = handler
 
+    def set_turn_gate_scope_factory(self, factory: Optional[Callable[..., Any]]) -> None:
+        """Install the runner-owned canonical turn scope for inbound delivery."""
+        if factory is not None and not callable(factory):
+            raise TypeError("turn gate scope factory must be callable")
+        self._turn_gate_scope_factory = factory
+
     def set_topic_recovery_fn(
         self,
         fn: Optional[Callable[[Any], Optional[str]]],
@@ -5950,6 +5967,20 @@ class BasePlatformAdapter(ABC):
             if inherited is not None and inherited.identity is not None
             else f"{session_scope}:{uuid.uuid4().hex}"
         )
+        scope_factory = getattr(self, "_turn_gate_scope_factory", None)
+        if scope_factory is None:
+            scope_factory = getattr(
+                getattr(self, "gateway_runner", None),
+                "_canonical_gateway_turn_scope",
+                None,
+            )
+        if callable(scope_factory):
+            with cast(
+                ContextManager[Any], scope_factory(event, session_scope, turn_id)
+            ):
+                return await self._process_message_background_unleased(
+                    event, session_key
+                )
         identity = build_runtime_identity(
             surface=getattr(self, "name", None) or "gateway",
             session_scope=session_scope,

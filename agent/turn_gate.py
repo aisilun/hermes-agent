@@ -158,6 +158,16 @@ class _ProviderRegistration:
     provider: TurnGateProvider
 
 
+@dataclass(frozen=True, slots=True)
+class _HostConfigurationSnapshot:
+    required_provider_id: str | None
+    allowed_child_environment: frozenset[str]
+    runtime_machine_id: str | None
+    configuration_error: str | None
+    configuration_loaded: bool
+    generation: int
+
+
 _registry_lock = threading.RLock()
 _providers: dict[str, _ProviderRegistration] = {}
 _required_provider_id: str | None = None
@@ -165,6 +175,7 @@ _allowed_child_environment: frozenset[str] = frozenset()
 _runtime_machine_id: str | None = None
 _configuration_error: str | None = None
 _configuration_loaded = False
+_host_configuration_generation = 0
 _gateway_instance_id = str(uuid.uuid4())
 _session_identity_key = os.urandom(32)
 _current_decision: ContextVar[GateDecision | None] = ContextVar(
@@ -175,6 +186,9 @@ _current_request: ContextVar[TurnGateRequest | None] = ContextVar(
 )
 _current_poison: ContextVar[_TurnPoison | None] = ContextVar(
     "hermes_turn_gate_poison", default=None
+)
+_current_host_configuration: ContextVar[_HostConfigurationSnapshot | None] = ContextVar(
+    "hermes_turn_gate_host_configuration", default=None
 )
 
 
@@ -251,11 +265,86 @@ def restore_turn_gate_providers(
         _providers.update(restored)
 
 
-def _latch_configuration_error(reason: str) -> None:
-    global _configuration_error, _configuration_loaded
+def _host_configuration_snapshot() -> _HostConfigurationSnapshot:
     with _registry_lock:
-        _configuration_error = reason
-        _configuration_loaded = True
+        return _HostConfigurationSnapshot(
+            required_provider_id=_required_provider_id,
+            allowed_child_environment=_allowed_child_environment,
+            runtime_machine_id=_runtime_machine_id,
+            configuration_error=_configuration_error,
+            configuration_loaded=_configuration_loaded,
+            generation=_host_configuration_generation,
+        )
+
+
+def _set_host_configuration(
+    *,
+    required_provider_id: str | None,
+    allowed_child_environment: frozenset[str],
+    runtime_machine_id: str | None,
+    configuration_error: str | None,
+    configuration_loaded: bool,
+) -> None:
+    global _required_provider_id, _allowed_child_environment
+    global _runtime_machine_id, _configuration_error, _configuration_loaded
+    global _host_configuration_generation
+    with _registry_lock:
+        previous_semantics = (
+            _required_provider_id,
+            _allowed_child_environment,
+            _runtime_machine_id,
+            _configuration_error,
+        )
+        next_semantics = (
+            required_provider_id,
+            allowed_child_environment,
+            runtime_machine_id,
+            configuration_error,
+        )
+        if next_semantics != previous_semantics:
+            _host_configuration_generation += 1
+        _required_provider_id = required_provider_id
+        _allowed_child_environment = allowed_child_environment
+        _runtime_machine_id = runtime_machine_id
+        _configuration_error = configuration_error
+        _configuration_loaded = configuration_loaded
+
+
+def snapshot_turn_gate_host_configuration() -> _HostConfigurationSnapshot:
+    """Capture exact host-owned configuration for transactional reload rollback."""
+    return _host_configuration_snapshot()
+
+
+def restore_turn_gate_host_configuration(
+    snapshot: _HostConfigurationSnapshot,
+) -> None:
+    """Restore an exact pre-transaction snapshot, including its generation."""
+    if not isinstance(snapshot, _HostConfigurationSnapshot):
+        raise ValueError("turn gate host configuration snapshot is invalid")
+    global _required_provider_id, _allowed_child_environment
+    global _runtime_machine_id, _configuration_error, _configuration_loaded
+    global _host_configuration_generation
+    with _registry_lock:
+        _required_provider_id = snapshot.required_provider_id
+        _allowed_child_environment = snapshot.allowed_child_environment
+        _runtime_machine_id = snapshot.runtime_machine_id
+        _configuration_error = snapshot.configuration_error
+        _configuration_loaded = snapshot.configuration_loaded
+        _host_configuration_generation = snapshot.generation
+
+
+def _latch_configuration_error(reason: str) -> None:
+    with _registry_lock:
+        required_provider_id = _required_provider_id
+        allowed_child_environment = _allowed_child_environment
+        runtime_machine_id = _runtime_machine_id
+    _set_host_configuration(
+        required_provider_id=required_provider_id,
+        allowed_child_environment=allowed_child_environment,
+        runtime_machine_id=runtime_machine_id,
+        configuration_error=reason,
+        configuration_loaded=True,
+    )
 
 
 def mark_turn_gate_configuration_error(reason: str) -> None:
@@ -272,9 +361,6 @@ def configure_turn_gate_from_config(config: object) -> None:
     valid configuration replaces that latch; removing the section disables the
     optional extension point and restores Hermes' default behavior.
     """
-    global _required_provider_id, _allowed_child_environment
-    global _runtime_machine_id, _configuration_error, _configuration_loaded
-
     agent_config = (
         cast(Mapping[str, Any], config).get("agent")
         if isinstance(config, Mapping)
@@ -286,12 +372,13 @@ def configure_turn_gate_from_config(config: object) -> None:
         else None
     )
     if gate_config is None:
-        with _registry_lock:
-            _required_provider_id = None
-            _allowed_child_environment = frozenset()
-            _runtime_machine_id = None
-            _configuration_error = None
-            _configuration_loaded = True
+        _set_host_configuration(
+            required_provider_id=None,
+            allowed_child_environment=frozenset(),
+            runtime_machine_id=None,
+            configuration_error=None,
+            configuration_loaded=True,
+        )
         return
     if not isinstance(gate_config, Mapping):
         reason = "agent.turn_gate must be a mapping"
@@ -330,18 +417,20 @@ def configure_turn_gate_from_config(config: object) -> None:
         _latch_configuration_error(reason)
         raise TurnGateBlocked(reason)
 
-    with _registry_lock:
-        _required_provider_id = required.strip()
-        _allowed_child_environment = frozenset(raw_allowlist)
-        _runtime_machine_id = machine_id.strip()
-        _configuration_error = None
-        _configuration_loaded = True
+    _set_host_configuration(
+        required_provider_id=required.strip(),
+        allowed_child_environment=frozenset(raw_allowlist),
+        runtime_machine_id=machine_id.strip(),
+        configuration_error=None,
+        configuration_loaded=True,
+    )
 
 
 def clear_turn_gate_registry_for_testing() -> None:
     global _required_provider_id, _allowed_child_environment
     global _runtime_machine_id, _configuration_error, _configuration_loaded
     global _gateway_instance_id, _session_identity_key
+    global _host_configuration_generation
     with _registry_lock:
         _providers.clear()
         _required_provider_id = None
@@ -349,11 +438,13 @@ def clear_turn_gate_registry_for_testing() -> None:
         _runtime_machine_id = None
         _configuration_error = None
         _configuration_loaded = False
+        _host_configuration_generation = 0
         _gateway_instance_id = str(uuid.uuid4())
         _session_identity_key = os.urandom(32)
     _current_decision.set(None)
     _current_request.set(None)
     _current_poison.set(None)
+    _current_host_configuration.set(None)
 
 
 def build_runtime_identity(
@@ -452,11 +543,23 @@ def _poison_current(reason: str) -> None:
         poison.set(reason)
 
 
+def _validate_host_configuration_binding() -> None:
+    bound = _current_host_configuration.get()
+    if bound is None:
+        return
+    if _host_configuration_snapshot() != bound:
+        reason = "host configuration changed during outer turn"
+        _poison_current(reason)
+        raise TurnGateBlocked(reason)
+
+
 def _revalidate_current(checkpoint: str) -> GateDecision | None:
     poison = _current_poison.get()
     poisoned_reason = poison.get() if poison is not None else None
     if poisoned_reason is not None:
         raise TurnGateBlocked(f"outer-turn lease is poisoned: {poisoned_reason}")
+
+    _validate_host_configuration_binding()
 
     decision = _current_decision.get()
     if decision is None:
@@ -524,24 +627,33 @@ def acquire_outer_turn(
         raise ValueError("outer turn requires a TurnGateRequest")
     current = _current_decision.get()
     current_request = _current_request.get()
-    if current is not None:
-        if (
-            current.state is GateState.RELOAD_ONLY
-            and current_request is not None
-            and current_request.purpose == "reload"
-            and request.purpose != "reload"
-        ):
-            raise TurnGateBlocked("nested turn cannot elevate a RELOAD_ONLY lease")
-        _enforce_entry_state(current, request)
+    if current_request is not None:
+        poison = _current_poison.get()
+        poisoned_reason = poison.get() if poison is not None else None
+        if poisoned_reason is not None:
+            raise TurnGateBlocked(f"outer-turn lease is poisoned: {poisoned_reason}")
+        _validate_host_configuration_binding()
+        if request != current_request:
+            reason = "canonical outer-turn request mismatch"
+            _poison_current(reason)
+            raise TurnGateBlocked(reason)
+        if current is not None:
+            _enforce_entry_state(current, request)
         yield current
         return
 
+    host_configuration = _host_configuration_snapshot()
     required = _required_provider()
     if required is None:
         request_token = _current_request.set(request)
+        poison_token = _current_poison.set(_TurnPoison())
+        host_configuration_token = _current_host_configuration.set(host_configuration)
         try:
+            _validate_host_configuration_binding()
             yield None
         finally:
+            _current_host_configuration.reset(host_configuration_token)
+            _current_poison.reset(poison_token)
             _current_request.reset(request_token)
         return
     required_id, provider = required
@@ -562,10 +674,13 @@ def acquire_outer_turn(
     decision_token = _current_decision.set(decision)
     request_token = _current_request.set(request)
     poison_token = _current_poison.set(_TurnPoison())
+    host_configuration_token = _current_host_configuration.set(host_configuration)
     try:
+        _validate_host_configuration_binding()
         _enforce_entry_state(decision, request)
         yield decision
     finally:
+        _current_host_configuration.reset(host_configuration_token)
         _current_request.reset(request_token)
         _current_decision.reset(decision_token)
         _current_poison.reset(poison_token)
@@ -671,6 +786,8 @@ def inject_turn_gate_child_environment(
         type(name) is not str for name in base
     ):
         raise ValueError("child environment base must use text names")
+    if _current_request.get() is not None:
+        _revalidate_current("child-environment")
     with _registry_lock:
         allowed = _allowed_child_environment
     child = dict(base)
@@ -686,7 +803,7 @@ def inject_turn_gate_child_environment(
             )
         return child
 
-    decision = _revalidate_current("child-environment")
+    decision = _current_decision.get()
     assert decision is not None
     for name, value in decision.child_environment:
         if name not in allowed:
@@ -741,7 +858,9 @@ __all__ = [
     "mark_turn_gate_configuration_error",
     "record_tool_observation",
     "register_turn_gate_provider",
+    "restore_turn_gate_host_configuration",
     "restore_turn_gate_providers",
+    "snapshot_turn_gate_host_configuration",
     "snapshot_turn_gate_providers",
     "tool_block_message",
     "unregister_turn_gate_providers_by_owner",

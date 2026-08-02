@@ -524,3 +524,42 @@ def test_force_reload_refreshes_plugin_relative_submodules(tmp_path, monkeypatch
     _configure_gate("submodule-gate")
     with acquire_outer_turn(gate_request()) as lease:
         assert lease.generation == 2
+
+
+def test_failed_force_reload_restores_exact_host_gate_configuration(monkeypatch):
+    from agent.turn_gate import build_runtime_identity, enforce_output_allowed
+
+    manager = PluginManager()
+    manifest = PluginManifest(name="secure-gate", key="secure-gate", source="user")
+    provider = PluginGateProvider("secure-gate")
+    PluginContext(manifest, manager).register_turn_gate_provider(provider, api_version=1)
+    _configure_gate("secure-gate")
+    manager._discovered = True
+
+    def failed_round():
+        configure_turn_gate_from_config(
+            {
+                "agent": {
+                    "turn_gate": {
+                        "required_provider": "secure-gate",
+                        "runtime_identity": {"machine_id": "replacement-machine"},
+                        "allowed_child_environment": ["REPLACEMENT_LEASE"],
+                    }
+                }
+            }
+        )
+        raise RuntimeError("reload failed after host configuration mutation")
+
+    monkeypatch.setattr(manager, "_discover_and_load_inner", failed_round)
+
+    with acquire_outer_turn(gate_request()):
+        with pytest.raises(RuntimeError, match="reload failed"):
+            manager.discover_and_load(force=True)
+        restored_identity = build_runtime_identity(
+            surface="gateway",
+            session_scope="post-rollback-session",
+            turn_id="post-rollback-turn",
+        )
+        assert restored_identity is not None
+        assert restored_identity.machine_id == "test-machine"
+        enforce_output_allowed()

@@ -509,3 +509,80 @@ async def test_platform_send_revalidates_generation_before_network_call():
                 content="must not leak",
             )
     assert send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_inner_reuses_installed_canonical_request_without_rebuilding(
+    monkeypatch,
+):
+    events = []
+    provider = RecordingProvider(events)
+    register_turn_gate_provider("test-gate", provider)
+    _configure_gate("test-gate")
+    canonical_identity = build_runtime_identity(
+        surface="feishu",
+        session_scope="canonical-session",
+        turn_id="canonical-turn",
+    )
+    assert canonical_identity is not None
+    canonical_request = TurnGateRequest(
+        entrypoint="gateway",
+        purpose="business",
+        task_id="canonical-session",
+        identity=canonical_identity,
+    )
+
+    async def fake_inner(self, *args, **kwargs):
+        assert current_turn_gate_request() is canonical_request
+        return {"final_response": "ok"}
+
+    monkeypatch.setattr(GatewayRunner, "_run_agent_inner_unleased", fake_inner)
+    monkeypatch.setattr(
+        "agent.turn_gate.build_runtime_identity",
+        lambda **_kwargs: pytest.fail("canonical request must not be rebuilt"),
+    )
+    runner = object.__new__(GatewayRunner)
+
+    with acquire_outer_turn(canonical_request):
+        result = await runner._run_agent_inner(
+            "hello",
+            "context",
+            [],
+            SimpleNamespace(platform="feishu"),  # type: ignore[arg-type]
+            "session-1",
+        )
+
+    assert result == {"final_response": "ok"}
+    assert len(provider.requests) == 1
+    assert provider.requests[0] is canonical_request
+
+
+@pytest.mark.asyncio
+async def test_adapter_uses_installed_canonical_scope_for_whole_delivery(monkeypatch):
+    from contextlib import contextmanager
+
+    events = []
+    adapter = DirectSendAdapter()
+    setter = getattr(BasePlatformAdapter, "set_turn_gate_scope_factory", None)
+    assert callable(setter), "BasePlatformAdapter must expose canonical scope injection"
+
+    @contextmanager
+    def canonical_scope(_event, session_scope, turn_id):
+        events.append(("scope", session_scope, turn_id))
+        yield
+
+    async def fake_unleased(_event, _session_key):
+        events.append(("body",))
+
+    setter(adapter, canonical_scope)
+    monkeypatch.setattr(adapter, "_process_message_background_unleased", fake_unleased)
+    await BasePlatformAdapter._process_message_background(
+        adapter,
+        SimpleNamespace(),  # type: ignore[arg-type]
+        "raw-session-key",
+    )
+
+    assert events[0][0] == "scope"
+    assert events[0][1] != "raw-session-key"
+    assert events[0][2].startswith(f"{events[0][1]}:")
+    assert events[1] == ("body",)
