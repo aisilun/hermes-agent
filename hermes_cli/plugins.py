@@ -2299,6 +2299,11 @@ class PluginManager:
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
+                if hook_name == "pre_tool_call":
+                    logger.exception(
+                        "Pre-tool authorization hook callback failed closed"
+                    )
+                    raise
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
                     hook_name,
@@ -2643,11 +2648,18 @@ def resolve_pre_tool_block(
     times out is fail-closed to a block; ``block`` blocks with its message;
     anything else proceeds.
     """
-    details = _get_pre_tool_call_directive_details(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
+    try:
+        details = _get_pre_tool_call_directive_details(
+            tool_name, args, task_id=task_id, session_id=session_id,
+            tool_call_id=tool_call_id, turn_id=turn_id,
+            api_request_id=api_request_id, middleware_trace=middleware_trace,
+        )
+    except Exception:
+        logger.exception(
+            "Plugin pre-tool authorization resolver failed closed for %s",
+            tool_name,
+        )
+        return f"BLOCKED: plugin pre-tool authorization failed for {tool_name}"
     if details.action == "block":
         return details.message
     if details.action == "approve":

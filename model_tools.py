@@ -1252,6 +1252,11 @@ def handle_function_call(
         # fired it — do nothing here.
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
+            authorization_failure_message = (
+                "BLOCKED: plugin pre-tool authorization failed for "
+                f"{function_name}"
+            )
+            block_error_type = "plugin_block"
             try:
                 from hermes_cli.plugins import resolve_pre_tool_block
                 block_message = resolve_pre_tool_block(
@@ -1264,8 +1269,15 @@ def handle_function_call(
                     api_request_id=api_request_id or "",
                     middleware_trace=list(_tool_middleware_trace),
                 )
-            except Exception as _hook_err:
-                logger.debug("pre_tool_call hook error: %s", _hook_err)
+            except Exception:
+                logger.exception(
+                    "Plugin pre-tool authorization failed closed for %s",
+                    function_name,
+                )
+                block_message = authorization_failure_message
+
+            if block_message == authorization_failure_message:
+                block_error_type = "plugin_authorization_error"
 
             if block_message is not None:
                 result = tool_error(block_message)
@@ -1279,7 +1291,7 @@ def handle_function_call(
                     turn_id=turn_id,
                     api_request_id=api_request_id,
                     status="blocked",
-                    error_type="plugin_block",
+                    error_type=block_error_type,
                     error_message=block_message,
                     middleware_trace=list(_tool_middleware_trace),
                 )
