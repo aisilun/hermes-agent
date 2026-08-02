@@ -1,4 +1,4 @@
-"""Machine gates for the ASL-maintained Hermes fork candidate."""
+"""Machine gates for the official ASL-maintained Hermes fork release."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "governance" / "asl-fork-release.json"
 EXPECTED_VERSION = "0.19.1+asl.1"
 EXPECTED_TAG = "v0.19.1-asl.1"
-CURRENT_OFFICIAL_VERSION = "0.19.0+asl.3"
+CURRENT_OFFICIAL_VERSION = EXPECTED_VERSION
 EXPECTED_REQUIRED_TESTS = {
     "tests/agent/test_turn_gate.py",
     "tests/agent/test_conversation_reload_gate.py",
@@ -120,7 +120,7 @@ def test_asl_fork_contract_is_closed_and_version_locked():
         "repository": "aisilun/hermes-agent",
         "package_version": EXPECTED_VERSION,
         "planned_tag": EXPECTED_TAG,
-        "status": "candidate",
+        "status": "official",
         "prepared_at": "2026-08-01",
     }
 
@@ -227,30 +227,30 @@ def test_distribution_uses_the_fork_source_installer_not_python_artifacts():
     assert "Building wheels or sdists for hermes-agent is not supported" in setup_guard
 
 
-def test_candidate_keeps_review_release_and_live_activation_closed():
+def test_official_release_keeps_live_activation_closed():
     contract = _load_contract()
     assert contract["maintenance"] == {
         "owner": "aisilun",
         "upstream_tracking": "NousResearch/hermes-agent#74529",
         "reconciliation_policy": "official-tag-minimal-overlay",
     }
-    assert contract["candidate"]["status"] == "candidate"
+    assert contract["candidate"]["status"] == "official"
     assert contract["release_state"] == {
         "official_source_version": CURRENT_OFFICIAL_VERSION,
-        "source_status": "candidate",
-        "previous_official_version": CURRENT_OFFICIAL_VERSION,
+        "source_status": "official",
+        "previous_official_version": "0.19.0+asl.3",
         "github_release_requires_live_readback": True,
         "fleet_applied": False,
     }
     assert contract["review_gate"] == {
         "policy": "trusted-xiaomu-single-review",
         "exact_head_required": True,
-        "status": "pending",
+        "status": "approved",
     }
     assert contract["authorization"] == {
-        "merge_authorized": False,
-        "tag_authorized": False,
-        "release_authorized": False,
+        "merge_authorized": True,
+        "tag_authorized": True,
+        "release_authorized": True,
         "production_activation_authorized": False,
         "fleet_apply_authorized": False,
     }
