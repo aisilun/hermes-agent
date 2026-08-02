@@ -52,16 +52,14 @@ def _clear_turn_gate_registry():
 
 def _configure(provider: _SequencedProvider) -> None:
     register_turn_gate_provider("gate", provider, owner_id="gate")
-    configure_turn_gate_from_config(
-        {
-            "agent": {
-                "turn_gate": {
-                    "required_provider": "gate",
-                    "runtime_identity": {"machine_id": "machine-a"},
-                }
+    configure_turn_gate_from_config({
+        "agent": {
+            "turn_gate": {
+                "required_provider": "gate",
+                "runtime_identity": {"machine_id": "machine-a"},
             }
         }
-    )
+    })
 
 
 def _outer_request() -> TurnGateRequest:
@@ -140,14 +138,22 @@ def test_inventory_explicitly_declares_private_write_sites_and_exemptions():
         "_send_read_receipt",
     }
     expected_explicit = {
-        *(f"{MatrixAdapter.__module__}.{MatrixAdapter.__qualname__}.{name}" for name in matrix_methods),
-        *(f"{WhatsAppAdapter.__module__}.{WhatsAppAdapter.__qualname__}.{name}" for name in whatsapp_methods),
+        *(
+            f"{MatrixAdapter.__module__}.{MatrixAdapter.__qualname__}.{name}"
+            for name in matrix_methods
+        ),
+        *(
+            f"{WhatsAppAdapter.__module__}.{WhatsAppAdapter.__qualname__}.{name}"
+            for name in whatsapp_methods
+        ),
         f"{matrix_module.__name__}._standalone_send",
         f"{whatsapp_module.__name__}._standalone_send",
     }
     assert expected_explicit <= set(inventory)
     assert all(inventory[key]["declaration"] == "explicit" for key in expected_explicit)
-    assert all(inventory[key]["kind"] == "platform_mutation" for key in expected_explicit)
+    assert all(
+        inventory[key]["kind"] == "platform_mutation" for key in expected_explicit
+    )
 
     exemptions = cast(Callable[[], dict[str, dict[str, str]]], exemption_reader)()
     assert exemptions["BasePlatformAdapter.connect"]["reason"]
@@ -156,16 +162,14 @@ def test_inventory_explicitly_declares_private_write_sites_and_exemptions():
 
 @pytest.mark.asyncio
 async def test_matrix_join_leave_and_dm_write_are_zero_without_required_provider():
-    configure_turn_gate_from_config(
-        {
-            "agent": {
-                "turn_gate": {
-                    "required_provider": "missing-provider",
-                    "runtime_identity": {"machine_id": "machine-a"},
-                }
+    configure_turn_gate_from_config({
+        "agent": {
+            "turn_gate": {
+                "required_provider": "missing-provider",
+                "runtime_identity": {"machine_id": "machine-a"},
             }
         }
-    )
+    })
     adapter = _matrix_adapter()
     adapter._joined_rooms = set()
     adapter._client = MagicMock()
@@ -215,25 +219,23 @@ async def test_matrix_detached_invite_does_not_inherit_parent_lease():
 
 @pytest.mark.asyncio
 async def test_whatsapp_private_read_receipt_is_zero_without_required_provider():
-    configure_turn_gate_from_config(
-        {
-            "agent": {
-                "turn_gate": {
-                    "required_provider": "missing-provider",
-                    "runtime_identity": {"machine_id": "machine-a"},
-                }
+    configure_turn_gate_from_config({
+        "agent": {
+            "turn_gate": {
+                "required_provider": "missing-provider",
+                "runtime_identity": {"machine_id": "machine-a"},
             }
         }
-    )
+    })
     adapter = _whatsapp_adapter()
     session = MagicMock()
     session.post = MagicMock()
     adapter._http_session = session
 
     with pytest.raises(RuntimeError, match="required provider"):
-        await adapter._send_read_receipt(
-            {"readReceiptKey": {"id": "message-1", "fromMe": False}}
-        )
+        await adapter._send_read_receipt({
+            "readReceiptKey": {"id": "message-1", "fromMe": False}
+        })
 
     session.post.assert_not_called()
 

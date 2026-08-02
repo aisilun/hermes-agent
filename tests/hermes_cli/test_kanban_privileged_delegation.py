@@ -71,7 +71,9 @@ def _parse_kanban_cli(argv: list[str]):
 )
 def test_create_rejects_untrusted_origin_targeting_default(isolated_kanban, creator):
     with kb.connect_closing() as conn:
-        with pytest.raises(ValueError, match="privileged_profile_auto_dispatch_disabled"):
+        with pytest.raises(
+            ValueError, match="privileged_profile_auto_dispatch_disabled"
+        ):
             kb.create_task(
                 conn,
                 title="escalate",
@@ -111,7 +113,9 @@ def test_create_preserves_control_card_and_nonprivileged_delegation_shapes(
         assert _required_task(conn, default_to_worker).assignee == "worker-a"
 
 
-def test_model_tool_surfaces_privileged_profile_auto_dispatch_disabled_denial(isolated_kanban, monkeypatch):
+def test_model_tool_surfaces_privileged_profile_auto_dispatch_disabled_denial(
+    isolated_kanban, monkeypatch
+):
     from tools import kanban_tools
 
     monkeypatch.setenv("HERMES_PROFILE", "xiaozhen")
@@ -151,9 +155,7 @@ def test_model_tool_without_env_cannot_self_authorize_default(
         assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
-def test_cli_created_by_cannot_authorize_default(
-    isolated_kanban, monkeypatch, capsys
-):
+def test_cli_created_by_cannot_authorize_default(isolated_kanban, monkeypatch, capsys):
     from hermes_cli import kanban
 
     monkeypatch.setenv("HERMES_PROFILE", "xiaozhen")
@@ -222,7 +224,9 @@ def test_assign_rejects_nondefault_origin_targeting_default(isolated_kanban):
             assignee="worker-a",
             created_by="worker-a",
         )
-        with pytest.raises(ValueError, match="privileged_profile_auto_dispatch_disabled"):
+        with pytest.raises(
+            ValueError, match="privileged_profile_auto_dispatch_disabled"
+        ):
             kb.assign_task(conn, task_id, "default")
         assert _required_task(conn, task_id).assignee == "worker-a"
 
@@ -250,7 +254,9 @@ def test_assign_rejects_default_origin_after_handoff(isolated_kanban):
             assignee="worker-a",
             created_by="default",
         )
-        with pytest.raises(ValueError, match="privileged_profile_auto_dispatch_disabled"):
+        with pytest.raises(
+            ValueError, match="privileged_profile_auto_dispatch_disabled"
+        ):
             kb.assign_task(conn, task_id, "default")
         assert _required_task(conn, task_id).assignee == "worker-a"
 

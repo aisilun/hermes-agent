@@ -12,7 +12,12 @@ from agent.image_gen_registry import register_provider as register_image_provide
 from agent.secret_sources.base import SecretSource
 from agent.secret_sources import registry as secret_registry
 from gateway.platform_registry import PlatformEntry, platform_registry
-from hermes_cli.plugins import LoadedPlugin, PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import (
+    LoadedPlugin,
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+)
 from tools.registry import registry as tool_registry
 
 
@@ -154,7 +159,9 @@ def test_successful_force_reload_removes_only_prior_owner_entries(monkeypatch):
     assert {item["surface"] for item in read_ledger()} == {"hook"}
 
 
-def test_failed_force_reload_restores_exact_registry_objects_and_generation(monkeypatch):
+def test_failed_force_reload_restores_exact_registry_objects_and_generation(
+    monkeypatch,
+):
     manager = PluginManager()
     manifest = _manifest()
     ctx = PluginContext(manifest, manager)
@@ -191,7 +198,9 @@ def test_failed_force_reload_restores_exact_registry_objects_and_generation(monk
     assert manager._discovered is True
 
 
-def test_successful_reload_restores_overridden_host_objects_and_removes_stale_providers(monkeypatch):
+def test_successful_reload_restores_overridden_host_objects_and_removes_stale_providers(
+    monkeypatch,
+):
     manager = PluginManager()
     manifest = _manifest()
     ctx = PluginContext(manifest, manager)

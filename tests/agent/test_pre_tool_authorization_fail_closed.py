@@ -119,7 +119,9 @@ def test_inline_agent_tool_blocks_resolver_exception_and_emits_audit(monkeypatch
     assert audits[0]["error_type"] == "plugin_authorization_error"
 
 
-@pytest.mark.parametrize("concurrent", [False, True], ids=["sequential", "parallel-segmented"])
+@pytest.mark.parametrize(
+    "concurrent", [False, True], ids=["sequential", "parallel-segmented"]
+)
 def test_tool_executor_blocks_resolver_exception_before_handler(
     monkeypatch,
     concurrent: bool,
