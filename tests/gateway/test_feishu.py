@@ -358,7 +358,9 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
 
-    def _capture_sdk_log(self, message_factory, *, capture_root=False):
+    def _capture_sdk_log(
+        self, message_factory, *, capture_root=False, cleanup_state=None
+    ):
         import sys
         from types import ModuleType
 
@@ -412,6 +414,18 @@ class TestAdapterModule(unittest.TestCase):
 
             _run_official_feishu_ws_client(_FakeWSClient(), fake_adapter)
         finally:
+            if cleanup_state is not None:
+                try:
+                    current_loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    current_loop = None
+                cleanup_state.update(
+                    sdk_filters=tuple(sdk_logger.filters),
+                    handler_filters=tuple(handler.filters),
+                    adapter_loop=fake_adapter._ws_thread_loop,
+                    sdk_loop=fake_client_module.loop,
+                    current_loop=current_loop,
+                )
             sys.modules.clear()
             sys.modules.update(original_modules)
             sdk_logger.handlers = old_sdk_handlers
@@ -472,6 +486,9 @@ class TestAdapterModule(unittest.TestCase):
 
     def test_official_ws_sdk_filter_covers_pending_task_cancellation_logs(self):
         query_key = "access_" + "key"
+        cleanup_state = {}
+        previous_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(previous_loop)
 
         def schedule_pending_task():
             loop = asyncio.get_event_loop()
@@ -489,11 +506,23 @@ class TestAdapterModule(unittest.TestCase):
             loop.create_task(_pending())
             loop.run_until_complete(asyncio.sleep(0))
 
-        output = self._capture_sdk_log(schedule_pending_task)
-        self.assertNotIn("fixture-cancel-secret", output)
-        self.assertNotIn("fixture-cancel-ticket", output)
-        self.assertIn(f"{query_key}=[REDACTED]", output)
-        self.assertIn("ticket=[REDACTED]", output)
+        try:
+            output = self._capture_sdk_log(
+                schedule_pending_task,
+                cleanup_state=cleanup_state,
+            )
+            self.assertNotIn("fixture-cancel-secret", output)
+            self.assertNotIn("fixture-cancel-ticket", output)
+            self.assertIn(f"{query_key}=[REDACTED]", output)
+            self.assertIn("ticket=[REDACTED]", output)
+            self.assertEqual(cleanup_state["sdk_filters"], ())
+            self.assertEqual(cleanup_state["handler_filters"], ())
+            self.assertIsNone(cleanup_state["adapter_loop"])
+            self.assertIsNone(cleanup_state["sdk_loop"])
+            self.assertIs(cleanup_state["current_loop"], previous_loop)
+        finally:
+            asyncio.set_event_loop(None)
+            previous_loop.close()
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):

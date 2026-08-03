@@ -1503,6 +1503,12 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     for handler in filtered_handlers:
         handler.addFilter(sdk_filter)
 
+    try:
+        previous_event_loop = asyncio.get_event_loop()
+    except RuntimeError:
+        previous_event_loop = None
+    previous_sdk_loop = getattr(ws_client_module, "loop", None)
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     ws_client_module.loop = loop
@@ -1564,6 +1570,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             # Cancellation handlers and loop shutdown can emit SDK logs. Keep
             # every filter installed until that cleanup is complete, then
             # always restore the logger state even if cleanup itself fails.
+            ws_client_module.loop = previous_sdk_loop
+            asyncio.set_event_loop(previous_event_loop)
             sdk_logger.removeFilter(sdk_filter)
             for handler in filtered_handlers:
                 handler.removeFilter(sdk_filter)
