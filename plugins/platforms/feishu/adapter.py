@@ -1546,23 +1546,28 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
-        sdk_logger.removeFilter(sdk_filter)
-        for handler in filtered_handlers:
-            handler.removeFilter(sdk_filter)
-        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-        for task in pending:
-            task.cancel()
-        if pending:
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         try:
-            loop.stop()
-        except Exception:
-            pass
-        try:
-            loop.close()
-        except Exception:
-            pass
-        adapter._ws_thread_loop = None
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            try:
+                loop.stop()
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+        finally:
+            # Cancellation handlers and loop shutdown can emit SDK logs. Keep
+            # every filter installed until that cleanup is complete, then
+            # always restore the logger state even if cleanup itself fails.
+            sdk_logger.removeFilter(sdk_filter)
+            for handler in filtered_handlers:
+                handler.removeFilter(sdk_filter)
+            adapter._ws_thread_loop = None
 
 
 def check_feishu_requirements() -> bool:

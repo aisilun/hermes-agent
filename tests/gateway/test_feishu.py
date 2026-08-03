@@ -470,6 +470,31 @@ class TestAdapterModule(unittest.TestCase):
         self.assertNotIn("fixture-child-ticket", output)
         self.assertIn(f"{query_key}=[REDACTED]", output)
 
+    def test_official_ws_sdk_filter_covers_pending_task_cancellation_logs(self):
+        query_key = "access_" + "key"
+
+        def schedule_pending_task():
+            loop = asyncio.get_event_loop()
+
+            async def _pending():
+                try:
+                    await asyncio.sleep(3600)
+                except asyncio.CancelledError:
+                    logging.getLogger("Lark").info(
+                        f"cleanup wss://ws.example.invalid/connect?{query_key}="
+                        "fixture-cancel-secret&ticket=fixture-cancel-ticket"
+                    )
+                    raise
+
+            loop.create_task(_pending())
+            loop.run_until_complete(asyncio.sleep(0))
+
+        output = self._capture_sdk_log(schedule_pending_task)
+        self.assertNotIn("fixture-cancel-secret", output)
+        self.assertNotIn("fixture-cancel-ticket", output)
+        self.assertIn(f"{query_key}=[REDACTED]", output)
+        self.assertIn("ticket=[REDACTED]", output)
+
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
     """Group-path shim: run a message through ``_admit`` and return a bool."""

@@ -517,7 +517,11 @@ def redact_log_text(value: object) -> str:
     are persistence sinks, so every query value is removed here regardless of
     parameter name while parameter names and URL shape remain diagnosable.
     """
-    text = redact_sensitive_text("" if value is None else str(value), force=True)
+    text = redact_sensitive_text(
+        "" if value is None else str(value),
+        force=True,
+        redact_url_credentials=True,
+    )
     if not text:
         return text
 

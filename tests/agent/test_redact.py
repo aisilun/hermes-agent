@@ -22,6 +22,23 @@ def test_redact_log_text_strips_every_url_query_value_for_log_sinks():
     assert safe.endswith("&[REDACTED]")
 
 
+def test_redact_log_text_strips_url_userinfo_and_sensitive_fragment():
+    from agent.redact import redact_log_text
+
+    raw = (
+        "https://u:fixture-userinfo-pass@e.invalid/cb?state=fixture-state"
+        "#access_token=fixture-fragment-secret&public=ok"
+    )
+    safe = redact_log_text(raw)
+
+    assert "fixture-userinfo-pass" not in safe
+    assert "fixture-state" not in safe
+    assert "fixture-fragment-secret" not in safe
+    assert "u:***@e.invalid" in safe
+    assert "state=[REDACTED]" in safe
+    assert "#access_token=***&public=ok" in safe
+
+
 @pytest.fixture(autouse=True)
 def _ensure_redaction_enabled(monkeypatch):
     """Ensure HERMES_REDACT_SECRETS is not disabled by prior test imports."""
