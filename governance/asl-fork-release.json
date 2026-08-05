@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "release": {
+    "package_version": "0.20.0",
+    "release_version": "0.20.0-asl.1",
+    "planned_tag": "v0.20.0-asl.1",
+    "release_name": "ASL Hermes v0.20.0+asl.1 Host Gate thin overlay",
+    "status": "official-source-ready",
+    "release_only_pr": "pending",
+    "release_reviewed_head": "pending",
+    "release_review_id": "pending",
+    "release_merge_commit": "pending",
+    "tag_created": false,
+    "github_release_created": false,
+    "asset_count": 0
+  },
+  "upstream": {
+    "repository": "NousResearch/hermes-agent",
+    "version": "0.20.0",
+    "tag": "v2026.8.3",
+    "tag_type": "annotated",
+    "tag_object": "7de39e700d2c329e15d32eb0b96e2f7cdd9fbdb2",
+    "commit": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+    "tree": "b217767ccb994605dad522e693fa1b4cdbc2f352"
+  },
+  "overlay": {
+    "repository": "aisilun/hermes-agent",
+    "base_branch": "asl/upstream-v2026.8.3",
+    "source_pr": 12,
+    "source_reviewed_head": "70a2fd89eb9c9da594968c1d552eaf918a82bda1",
+    "source_review_id": 4867149067,
+    "source_review_state": "APPROVED",
+    "source_pr_tree": "e0a5957f695448ec971abfc9505d794aab3dc53b",
+    "source_merge_commit": "c0872e8b27bf4232dc353d6a0d43d6a132033744",
+    "source_merge_tree": "e0a5957f695448ec971abfc9505d794aab3dc53b",
+    "policy_model": "policy-neutral-host-api",
+    "retirement_condition": "upstream-equivalent-release-verified",
+    "runtime_paths": [
+      "agent/conversation_loop.py",
+      "agent/tool_executor.py",
+      "agent/turn_gate.py",
+      "cron/lifecycle_guard.py",
+      "gateway/platforms/base.py",
+      "gateway/run.py",
+      "gateway/slash_commands.py",
+      "hermes_cli/plugins.py",
+      "model_tools.py",
+      "plugins/platforms/matrix/adapter.py",
+      "plugins/platforms/simplex/adapter.py",
+      "plugins/platforms/whatsapp/adapter.py",
+      "tools/environments/local.py",
+      "tools/registry.py"
+    ]
+  },
+  "verification": {
+    "source_pr_ci_run": 31010701357,
+    "source_pr_check_runs_total": 37,
+    "source_pr_check_runs_success": 25,
+    "source_pr_check_runs_skipped": 12,
+    "source_pr_check_runs_failed": 0,
+    "source_author_self_check": "150 passed",
+    "source_post_merge_ci": "CI_NOT_CONFIGURED",
+    "release_only_exact_head_ci_required": true,
+    "release_merge_workflow_dispatch_required": false,
+    "release_merge_detached_verification_required": true,
+    "required_host_api_paths": [
+      "agent/turn_gate.py",
+      "hermes_cli/plugins.py",
+      "tools/environments/local.py"
+    ]
+  },
+  "distribution": {
+    "method": "shell-installer-source-checkout",
+    "repository": "https://github.com/aisilun/hermes-agent.git",
+    "ref": "v0.20.0-asl.1",
+    "release_assets": [],
+    "unsupported_artifacts": [
+      "wheel",
+      "sdist",
+      "pypi"
+    ]
+  },
+  "authorization": {
+    "merge_authorized": true,
+    "tag_authorized": true,
+    "release_authorized": true,
+    "production_activation_authorized": false,
+    "gateway_restart_authorized": false,
+    "profile_apply_authorized": false,
+    "fleet_apply_authorized": false,
+    "database_migration_authorized": false
+  }
+}
