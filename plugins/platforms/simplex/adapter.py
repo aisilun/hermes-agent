@@ -141,6 +141,9 @@ class SimplexAdapter(BasePlatformAdapter):
     ``ctx.register_platform()`` in :func:`register`.
     """
 
+    _GATE_GUARDED_PRIVATE_OUTPUT_METHODS = frozenset(
+        {"_send_ws", "_send_command", "_send_fire_and_forget"}
+    )
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     def __init__(self, config: PlatformConfig, **kwargs):
@@ -400,7 +403,10 @@ class SimplexAdapter(BasePlatformAdapter):
                     "SimpleX: auto-accepting contact request %s",
                     _redact_id(str(contact_req_id)),
                 )
-                await self._send_command(f"/accept {contact_req_id}")
+                await self._run_deferred_platform_side_effect(
+                    "simplex-auto-accept",
+                    lambda: self._send_command(f"/accept {contact_req_id}"),
+                )
             return
 
         # Early file-descriptor ready: simplex fires this before newChatItems
@@ -415,7 +421,10 @@ class SimplexAdapter(BasePlatformAdapter):
                     "SimpleX: rcvFileDescrReady for fileId=%s — sending /freceive",
                     file_id,
                 )
-                await self._send_fire_and_forget(f"/freceive {file_id}")
+                await self._run_deferred_platform_side_effect(
+                    "simplex-file-receive",
+                    lambda: self._send_fire_and_forget(f"/freceive {file_id}"),
+                )
             return
 
         # New messages — simplex-chat sends "newChatItems" with an array
@@ -585,7 +594,10 @@ class SimplexAdapter(BasePlatformAdapter):
                 self._pending_file_transfers[file_id] = chat_item
                 # Fire-and-forget: simplex-chat does not return a corrId reply
                 # for /freceive, so awaiting one would block the event loop.
-                await self._send_fire_and_forget(f"/freceive {file_id}")
+                await self._run_deferred_platform_side_effect(
+                    "simplex-file-receive",
+                    lambda: self._send_fire_and_forget(f"/freceive {file_id}"),
+                )
                 return
 
             if file_path:
@@ -758,7 +770,7 @@ class SimplexAdapter(BasePlatformAdapter):
     async def _send_command(
         self, command: str, timeout: float = 30.0
     ) -> Optional[dict]:
-        """Send a command and await the correlated response."""
+        """Send a platform-mutating command and await its response."""
         ws = self._ws
         if not ws:
             logger.warning("SimpleX: command sent but WebSocket not connected")
@@ -766,21 +778,46 @@ class SimplexAdapter(BasePlatformAdapter):
 
         corr_id = self._make_corr_id()
         payload = json.dumps({"corrId": corr_id, "cmd": command})
-
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
         self._pending_responses[corr_id] = fut
-
         try:
             await ws.send(payload)
-            result = await asyncio.wait_for(fut, timeout=timeout)
-            return result
+            return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("SimpleX: command timed out: %s", command[:50])
             self._pending_responses.pop(corr_id, None)
             return None
         except Exception as e:
             logger.warning("SimpleX: command failed: %s — %s", command[:50], e)
+            self._pending_responses.pop(corr_id, None)
+            return None
+
+    async def _query_command(
+        self, command: str, timeout: float = 30.0
+    ) -> Optional[dict]:
+        """Execute one allow-listed read-only directory query."""
+        if command not in {"/contacts", "/groups"}:
+            raise ValueError("SimpleX read-only command is not allow-listed")
+        ws = self._ws
+        if not ws:
+            logger.warning("SimpleX: query sent but WebSocket not connected")
+            return None
+
+        corr_id = self._make_corr_id()
+        payload = json.dumps({"corrId": corr_id, "cmd": command})
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._pending_responses[corr_id] = fut
+        try:
+            await ws.send(payload)
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("SimpleX: query timed out: %s", command[:50])
+            self._pending_responses.pop(corr_id, None)
+            return None
+        except Exception as e:
+            logger.warning("SimpleX: query failed: %s — %s", command[:50], e)
             self._pending_responses.pop(corr_id, None)
             return None
 
@@ -875,7 +912,7 @@ class SimplexAdapter(BasePlatformAdapter):
 
         channels: List[Dict[str, Any]] = []
 
-        resp = await self._send_command("/contacts", timeout=10.0)
+        resp = await self._query_command("/contacts", timeout=10.0)
         if resp is None:
             # Daemon unresponsive — keep whatever the directory already has.
             return None
@@ -897,7 +934,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 "type": "dm",
             })
 
-        resp = await self._send_command("/groups", timeout=10.0)
+        resp = await self._query_command("/groups", timeout=10.0)
         if resp is not None:
             for group in resp.get("groups") or []:
                 # The daemon returns each group as either a groupInfo dict
