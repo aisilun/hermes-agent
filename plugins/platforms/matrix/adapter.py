@@ -1049,6 +1049,19 @@ class _CryptoStateStore:
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
+    _GATE_GUARDED_PRIVATE_OUTPUT_METHODS = frozenset(
+        {
+            "_join_room_by_id",
+            "_send_local_file",
+            "_send_reaction",
+            "_redact_reaction",
+            "_send_invalid_reaction_feedback",
+            "_redact_bot_approval_reactions",
+            "_redact_bot_model_picker_reactions",
+            "_send_simple_message",
+            "_record_dm_room",
+        }
+    )
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
 
@@ -3704,20 +3717,26 @@ class MatrixAdapter(BasePlatformAdapter):
             return
 
         async def _join_invite() -> None:
-            try:
-                joined = await asyncio.wait_for(
-                    self._join_room_by_id(room_id), timeout=45.0
-                )
-                # Persist the DM signal from the invite once the join lands,
-                # so m.direct is authoritative even on a fresh bot account.
+            async def _join_and_record() -> bool:
+                joined = await self._join_room_by_id(room_id)
                 if joined and is_direct and inviter:
                     await self._record_dm_room(room_id, inviter)
+                return joined
+
+            try:
+                await asyncio.wait_for(
+                    self._run_deferred_platform_side_effect(
+                        "matrix-invite-join",
+                        _join_and_record,
+                    ),
+                    timeout=45.0,
+                )
             except asyncio.TimeoutError:
                 logger.warning("Matrix: timed out joining invite %s", room_id)
             finally:
                 self._invite_join_tasks.pop(room_id, None)
 
-        self._invite_join_tasks[room_id] = asyncio.create_task(_join_invite())
+        self._invite_join_tasks[room_id] = create_detached_task(_join_invite())
 
     def _schedule_pending_invite_joins(self, sync_data: Dict[str, Any]) -> None:
         """Join rooms still present in rooms.invite after sync processing."""

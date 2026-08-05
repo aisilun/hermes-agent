@@ -338,6 +338,9 @@ class SideEffectAdapter(BasePlatformAdapter):
     """
 
     platform_name = "test-side-effect"
+    _GATE_GUARDED_PRIVATE_OUTPUT_METHODS = frozenset(
+        {"_join_room_by_id", "_send_read_receipt", "_redact_reaction"}
+    )
 
     def __init__(self):
         self.handoff_calls = 0
@@ -348,6 +351,9 @@ class SideEffectAdapter(BasePlatformAdapter):
         self.read_receipt_calls = 0
         self.redact_calls = 0
         self.presence_calls = 0
+        self.private_join_calls = 0
+        self.private_receipt_calls = 0
+        self.private_redact_calls = 0
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -398,6 +404,58 @@ class SideEffectAdapter(BasePlatformAdapter):
     async def set_presence(self, state: str = "online") -> bool:
         self.presence_calls += 1
         return True
+
+    async def _join_room_by_id(self, room_id: str) -> bool:
+        self.private_join_calls += 1
+        return True
+
+    async def _send_read_receipt(self, payload: dict) -> None:
+        self.private_receipt_calls += 1
+
+    async def _redact_reaction(self, room_id: str, event_id: str) -> bool:
+        self.private_redact_calls += 1
+        return True
+
+
+@pytest.mark.asyncio
+async def test_registered_private_platform_side_effects_require_outer_lease():
+    register_turn_gate_provider("test-gate", RecordingProvider([]))
+    _configure_gate("test-gate")
+    adapter = SideEffectAdapter()
+
+    for operation in (
+        lambda: adapter._join_room_by_id("!room:test"),
+        lambda: adapter._send_read_receipt({"message_id": "m-1"}),
+        lambda: adapter._redact_reaction("!room:test", "reaction-1"),
+    ):
+        with pytest.raises(TurnGateBlocked, match="outer-turn lease"):
+            await operation()
+
+    assert adapter.private_join_calls == 0
+    assert adapter.private_receipt_calls == 0
+    assert adapter.private_redact_calls == 0
+
+
+def test_real_adapters_register_known_private_side_effect_boundaries():
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.simplex.adapter import SimplexAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    assert {
+        "_join_room_by_id",
+        "_send_reaction",
+        "_redact_reaction",
+        "_record_dm_room",
+    } <= MatrixAdapter._GATE_GUARDED_PRIVATE_OUTPUT_METHODS
+    assert {
+        "_send_media_to_bridge",
+        "_send_read_receipt",
+    } <= WhatsAppAdapter._GATE_GUARDED_PRIVATE_OUTPUT_METHODS
+    assert {
+        "_send_ws",
+        "_send_command",
+        "_send_fire_and_forget",
+    } <= SimplexAdapter._GATE_GUARDED_PRIVATE_OUTPUT_METHODS
 
 
 @pytest.mark.asyncio

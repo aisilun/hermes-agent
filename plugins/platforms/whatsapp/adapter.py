@@ -27,6 +27,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from agent.turn_gate import create_detached_task
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (
     find_node_executable,
@@ -407,6 +408,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     share it. Only transport-specific code lives here.
     """
 
+    _GATE_GUARDED_PRIVATE_OUTPUT_METHODS = frozenset(
+        {"_send_media_to_bridge", "_send_read_receipt"}
+    )
     # Default bridge location resolved via shared helper
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
@@ -1337,7 +1341,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # Fire-and-forget: a slow bridge /read must not
                                 # delay message dispatch (matches BlueBubbles
                                 # asyncio.create_task pattern for mark_read).
-                                asyncio.create_task(self._send_read_receipt(msg_data))
+                                create_detached_task(
+                                    self._run_deferred_platform_side_effect(
+                                        "whatsapp-read-receipt",
+                                        lambda data=msg_data: self._send_read_receipt(data),
+                                    )
+                                )
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:

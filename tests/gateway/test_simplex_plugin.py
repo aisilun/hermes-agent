@@ -197,7 +197,7 @@ async def test_list_channels_contacts_and_groups():
             }
         return None
 
-    adapter._send_command = fake_send_command
+    adapter._query_command = fake_send_command
     channels = await adapter.list_channels()
 
     assert {"id": "alice", "name": "alice", "type": "dm"} in channels
@@ -223,7 +223,7 @@ async def test_list_channels_returns_none_on_contacts_timeout():
     async def fake_send_command(command, timeout=30.0):
         return None  # daemon unresponsive
 
-    adapter._send_command = fake_send_command
+    adapter._query_command = fake_send_command
     assert await adapter.list_channels() is None
 
 

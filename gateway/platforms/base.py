@@ -2710,6 +2710,11 @@ class BasePlatformAdapter(ABC):
             "set_presence",
         }
     )
+    # Private helpers are never inferred by prefix: adapters must explicitly
+    # register only methods that cross a real platform side-effect boundary.
+    # This keeps query/setup helpers out of the gate while preventing direct
+    # calls from bypassing the host-owned checkpoint.
+    _GATE_GUARDED_PRIVATE_OUTPUT_METHODS: frozenset[str] = frozenset()
     _GATE_GUARDED_OUTPUT_PREFIXES = (
         "send",
         "edit",
@@ -2740,6 +2745,7 @@ class BasePlatformAdapter(ABC):
         for method_name, implementation in tuple(cls.__dict__.items()):
             if not (
                 method_name in cls._GATE_GUARDED_OUTPUT_METHODS
+                or method_name in cls._GATE_GUARDED_PRIVATE_OUTPUT_METHODS
                 or method_name.startswith(cls._GATE_GUARDED_OUTPUT_PREFIXES)
             ):
                 continue
@@ -2775,6 +2781,27 @@ class BasePlatformAdapter(ABC):
 
             setattr(guarded_output_method, "_hermes_output_gate_wrapped", True)
             setattr(cls, method_name, guarded_output_method)
+
+    async def _run_deferred_platform_side_effect(
+        self,
+        entrypoint: str,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Run a detached platform mutation under a fresh outer-turn lease."""
+        turn_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        identity = build_runtime_identity(
+            surface=entrypoint,
+            session_scope=session_id,
+            turn_id=turn_id,
+        )
+        request = TurnGateRequest(
+            entrypoint=entrypoint,
+            purpose="business",
+            identity=identity,
+        )
+        with acquire_outer_turn(request):
+            return await operation()
 
     # Whether this platform renders triple-backtick fenced code blocks (i.e.
     # ``format_message`` translates/preserves markdown fences into a real code

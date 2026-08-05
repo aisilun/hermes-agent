@@ -19219,29 +19219,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             build_runtime_identity,
         )
 
-        turn_id = f"{task_id}:{uuid.uuid4().hex[:8]}"
-        identity = build_runtime_identity(
-            surface="gateway-background",
-            session_scope=task_id,
-            turn_id=turn_id,
-        )
-        request = TurnGateRequest(
-            entrypoint="gateway-background",
-            purpose="business",
-            task_id=task_id,
-            identity=identity,
-        )
-        with acquire_outer_turn(request):
-            if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        async def _run_in_current_profile_scope() -> None:
+            turn_id = f"{task_id}:{uuid.uuid4().hex[:8]}"
+            identity = build_runtime_identity(
+                surface="gateway-background",
+                session_scope=task_id,
+                turn_id=turn_id,
+            )
+            request = TurnGateRequest(
+                entrypoint="gateway-background",
+                purpose="business",
+                task_id=task_id,
+                identity=identity,
+            )
+            with acquire_outer_turn(request):
                 return await self._run_background_task_inner(
-                    prompt, source, task_id, event_message_id, media_urls, media_types,
+                    prompt,
+                    source,
+                    task_id,
+                    event_message_id,
+                    media_urls,
+                    media_types,
                 )
 
-            profile_home = self._resolve_profile_home_for_source(source)
-            with _profile_runtime_scope(profile_home):
-                return await self._run_background_task_inner(
-                    prompt, source, task_id, event_message_id, media_urls, media_types,
-                )
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await _run_in_current_profile_scope()
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            return await _run_in_current_profile_scope()
 
     async def _run_background_task_inner(
         self,
