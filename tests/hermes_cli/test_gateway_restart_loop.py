@@ -419,6 +419,49 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    def test_allows_extensionless_python_shebang_wrapper(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "identity-dispatcher"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "from pathlib import Path\n"
+            "ROOT = Path('/tmp') / 'identity'\n"
+            "print(ROOT)\n"
+        )
+        script.chmod(0o700)
+
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            f"{script} status",
+            cwd=str(tmp_path),
+        )
+
+        assert result is False
+
+    def test_blocks_extensionless_python_shebang_with_literal_lifecycle(
+        self, tmp_path
+    ):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "unsafe-python-wrapper"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "os.system('hermes gateway restart')\n"
+        )
+        script.chmod(0o700)
+
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            str(script),
+            cwd=str(tmp_path),
+        )
+
+        assert result is True
+
     def test_launchctl_submit_parser_handles_shell_quoting(self, monkeypatch):
         import tools.terminal_tool as tt
 

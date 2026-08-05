@@ -102,6 +102,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
+_PYTHON_SHEBANG_PATTERN = re.compile(
+    r"^#![^\n]*\bpython(?:\d+(?:\.\d+)*)?\b",
+    re.IGNORECASE,
+)
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
@@ -285,6 +289,11 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     return data.decode("utf-8", errors="replace"), False
 
 
+def _is_python_shebang_script(text: str) -> bool:
+    """Return True when an executable script declares a Python interpreter."""
+    return bool(_PYTHON_SHEBANG_PATTERN.search(text))
+
+
 def _contains_unsafe_gateway_action(
     command: str,
     *,
@@ -328,6 +337,14 @@ def _contains_unsafe_gateway_action(
             # Local path missing; try the remote backend if one is available.
             script_text = read_remote_script(str(script_path))
         if not script_text:
+            continue
+        # Executable Python scripts without a .py suffix are common for CLI
+        # wrappers. Treat them like the existing .py cron path: scan direct
+        # lifecycle command text, but do not tokenize Python source as POSIX
+        # shell and recursively interpret pathlib's "/" operator as a path.
+        if _is_python_shebang_script(script_text):
+            if contains_gateway_lifecycle_command(script_text):
+                return True
             continue
         # Relative references inside a script resolve against that script's
         # directory, not the original command's cwd.
