@@ -1929,6 +1929,162 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+def test_respawn_guard_active_pr_bypassed_by_later_promotion(kanban_home):
+    """A promotion after the PR comment is an explicit request to resume."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="resume-pr-task", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                t,
+                "Opened https://github.com/totemx-AI/subsidysmart/pull/42",
+                now - 20,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted', ?)",
+            (t, now - 10),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason is None
+
+
+@pytest.mark.parametrize("event_kind", ["unblocked", "reclaimed", "status"])
+def test_respawn_guard_active_pr_bypassed_by_later_resume_event(
+    kanban_home, event_kind
+):
+    """Each established re-queue event supersedes an older PR comment."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title=f"resume-pr-{event_kind}", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                t,
+                "Opened https://github.com/totemx-AI/subsidysmart/pull/42",
+                now - 20,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) VALUES (?, ?, ?)",
+            (t, event_kind, now - 10),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason is None
+
+
+def test_respawn_guard_resume_event_before_pr_comment_does_not_bypass(kanban_home):
+    """A prior resume cannot supersede a PR comment that came later."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-after-resume", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted', ?)",
+            (t, now - 30),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                t,
+                "Opened https://github.com/totemx-AI/subsidysmart/pull/42",
+                now - 20,
+            ),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason == "active_pr"
+
+
+def test_respawn_guard_same_second_resume_event_fails_closed(kanban_home):
+    """Cross-table rows in one second have no total order, so retain the guard."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="same-second-pr", assignee="alice")
+        timestamp = int(time.time()) - 10
+        # Insert the event first to model an actually-earlier event with the
+        # same second-level timestamp as the later PR comment.
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted', ?)",
+            (t, timestamp),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                t,
+                "Opened https://github.com/totemx-AI/subsidysmart/pull/42",
+                timestamp,
+            ),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason == "active_pr"
+
+
+@pytest.mark.parametrize("event_kind", ["respawn_guarded", "heartbeat"])
+def test_respawn_guard_noise_event_does_not_bypass_active_pr(
+    kanban_home, event_kind
+):
+    """Dispatcher telemetry is not an operator request to resume the task."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title=f"pr-noise-{event_kind}", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                t,
+                "Opened https://github.com/totemx-AI/subsidysmart/pull/42",
+                now - 20,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) VALUES (?, ?, ?)",
+            (t, event_kind, now - 10),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason == "active_pr"
+
+
+def test_respawn_guard_new_pr_comment_after_resume_rearms_guard(kanban_home):
+    """Only a resume after the newest matching PR comment can bypass the guard."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="new-pr-after-resume", assignee="alice")
+        now = int(time.time())
+        for body, created_at in (
+            ("Opened https://github.com/example/repo/pull/41", now - 30),
+            ("Opened https://github.com/example/repo/pull/42", now - 10),
+        ):
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, 'worker', ?, ?)",
+                (t, body, created_at),
+            )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted', ?)",
+            (t, now - 20),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason == "active_pr"
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:
